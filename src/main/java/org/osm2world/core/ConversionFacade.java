@@ -94,11 +94,8 @@ public class ConversionFacade {
 	 */
 	static final List<WorldModule> createDefaultModuleList(Configuration config) {
 
-		List<Class<? extends WorldModule>> excludedModules = new ArrayList<>(0);
-
-		if (config.getBoolean("noSurface", false)) {
-			excludedModules.add(SurfaceAreaModule.class);
-		};
+		List<String> excludedModules = config.getList("excludeWorldModule")
+			.stream().map(m -> m.toString()).toList();
 
 		return Stream.of((WorldModule)
 			new RoadModule(),
@@ -124,7 +121,7 @@ public class ConversionFacade {
 			new InvisibleModule(),
 			new IndoorModule()
 		)
-		.filter(m -> !excludedModules.contains(m.getClass()))
+		.filter(m -> !excludedModules.contains(m.getClass().getSimpleName()))
 		.toList();
 	}
 

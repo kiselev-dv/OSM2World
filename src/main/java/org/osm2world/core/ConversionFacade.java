@@ -1,15 +1,15 @@
 package org.osm2world.core;
 
-import static java.lang.Math.abs;
-import static java.util.Arrays.asList;
-import static java.util.Collections.emptyList;
-import static java.util.Collections.singleton;
-import static java.util.Comparator.comparingDouble;
-import static org.osm2world.core.math.AxisAlignedRectangleXZ.bbox;
+import static java.lang.Math.*;
+import static java.util.Arrays.*;
+import static java.util.Collections.*;
+import static java.util.Comparator.*;
+import static org.osm2world.core.math.AxisAlignedRectangleXZ.*;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.*;
+import java.util.ArrayList;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
@@ -19,10 +19,7 @@ import javax.annotation.Nullable;
 import org.apache.commons.configuration.BaseConfiguration;
 import org.apache.commons.configuration.Configuration;
 import org.osm2world.core.conversion.ConversionLog;
-import org.osm2world.core.map_data.creation.LatLon;
-import org.osm2world.core.map_data.creation.MapProjection;
-import org.osm2world.core.map_data.creation.MetricMapProjection;
-import org.osm2world.core.map_data.creation.OSMToMapDataConverter;
+import org.osm2world.core.map_data.creation.*;
 import org.osm2world.core.map_data.data.MapData;
 import org.osm2world.core.map_data.data.MapMetadata;
 import org.osm2world.core.map_elevation.creation.*;
@@ -37,6 +34,7 @@ import org.osm2world.core.osm.data.OSMData;
 import org.osm2world.core.target.Target;
 import org.osm2world.core.target.TargetUtil;
 import org.osm2world.core.target.common.material.Materials;
+import org.osm2world.core.util.ConfigUtil;
 import org.osm2world.core.util.FaultTolerantIterationUtil;
 import org.osm2world.core.util.functions.Factory;
 import org.osm2world.core.world.attachment.AttachmentConnector;
@@ -285,11 +283,11 @@ public class ConversionFacade {
 		/* determine elevations */
 		updatePhase(Phase.ELEVATION);
 
-		String srtmDir = config.getString("srtmDir", null);
+		File srtmDir = ConfigUtil.resolveFileConfigProperty(config, config.getString("srtmDir", null));
 		TerrainElevationData eleData = null;
 
 		if (srtmDir != null) {
-			eleData = new SRTMData(new File(srtmDir), mapProjection);
+			eleData = new SRTMData(srtmDir, mapProjection);
 		}
 
 		/* create terrain and attach connectors */

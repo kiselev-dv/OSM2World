@@ -2,7 +2,6 @@ package org.osm2world.core.world.modules;
 
 import static java.util.Arrays.asList;
 import static java.util.Collections.*;
-import static java.util.stream.Collectors.toList;
 import static org.osm2world.core.math.GeometryUtil.closeLoop;
 import static org.osm2world.core.math.GeometryUtil.equallyDistributePointsAlong;
 import static org.osm2world.core.math.VectorXYZ.Y_UNIT;
@@ -33,7 +32,6 @@ import org.osm2world.core.math.shapes.PolygonShapeXZ;
 import org.osm2world.core.math.shapes.PolylineXZ;
 import org.osm2world.core.math.shapes.ShapeXZ;
 import org.osm2world.core.math.shapes.SimplePolygonShapeXZ;
-import org.osm2world.core.target.Target;
 import org.osm2world.core.target.common.ExtrudeOption;
 import org.osm2world.core.target.common.material.Material;
 import org.osm2world.core.target.common.material.Material.Interpolation;
@@ -45,7 +43,7 @@ import org.osm2world.core.target.common.mesh.TriangleGeometry;
 import org.osm2world.core.target.common.model.InstanceParameters;
 import org.osm2world.core.target.common.model.Model;
 import org.osm2world.core.target.common.model.ModelInstance;
-import org.osm2world.core.world.data.LegacyWorldObject;
+import org.osm2world.core.world.data.ProceduralWorldObject;
 import org.osm2world.core.world.modules.common.ConfigurableWorldModule;
 import org.osm2world.core.world.modules.common.WorldModuleGeometryUtil;
 import org.osm2world.core.world.network.AbstractNetworkWaySegmentWorldObject;
@@ -110,24 +108,11 @@ public class RailwayModule extends ConfigurableWorldModule {
 		public List<Mesh> buildMeshes(InstanceParameters params) {
 
 			VectorXYZ position = params.position();
-			Double height = params.height();
-			Double width = params.width();
-			Double length = params.length();
 
-			if (height == null) {
-				height = SLEEPER_HEIGHT;
-			}
-			if (length == null) {
-				length = SLEEPER_LENGTH;
-			}
-			if (width == null) {
-				width = sleeperWidth;
-			}
-
-			SimplePolygonShapeXZ box = new AxisAlignedRectangleXZ(NULL_VECTOR, width, length);
+			SimplePolygonShapeXZ box = new AxisAlignedRectangleXZ(NULL_VECTOR, sleeperWidth, SLEEPER_LENGTH);
 			box = box.rotatedCW(params.direction());
 
-			return singletonList(new Mesh(new ExtrusionGeometry(box, asList(position, position.addY(height)),
+			return singletonList(new Mesh(new ExtrusionGeometry(box, asList(position, position.addY(SLEEPER_HEIGHT)),
 					null, null, null, EnumSet.of(END_CAP), WOOD.getTextureDimensions()), WOOD, LOD4));
 
 		}
@@ -270,8 +255,8 @@ public class RailwayModule extends ConfigurableWorldModule {
 
 			return sleeperPositions.stream()
 					.map(it -> new ModelInstance(sleeperModel,
-								new InstanceParameters(it, segment.getDirection().angle(), null, sleeperWidth, null)))
-					.collect(toList());
+								new InstanceParameters(it, segment.getDirection().angle())))
+					.toList();
 
 		}
 
@@ -298,14 +283,14 @@ public class RailwayModule extends ConfigurableWorldModule {
 	}
 
 	public static class RailJunction extends JunctionNodeWorldObject<Rail>
-			implements LegacyWorldObject {
+			implements ProceduralWorldObject {
 
 		public RailJunction(MapNode node) {
 			super(node, Rail.class);
 		}
 
 		@Override
-		public void renderTo(Target target) {
+		public void buildMeshesAndModels(Target target) {
 
 			if (getOutlinePolygon() == null) return;
 

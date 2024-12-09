@@ -1,15 +1,13 @@
 package org.osm2world.core.world.modules;
 
+import static java.lang.Math.PI;
 import static java.util.Arrays.asList;
 import static org.osm2world.core.target.common.material.Materials.TREE_CROWN;
 import static org.osm2world.core.target.common.material.Materials.TREE_TRUNK;
+import static org.osm2world.core.util.ValueParseUtil.parseMeasure;
 import static org.osm2world.core.world.modules.common.WorldModuleGeometryUtil.filterWorldObjectCollisions;
-import static org.osm2world.core.world.modules.common.WorldModuleParseUtil.parseHeight;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -17,25 +15,22 @@ import javax.annotation.Nullable;
 import org.apache.commons.configuration.Configuration;
 import org.osm2world.core.map_data.data.*;
 import org.osm2world.core.map_data.data.overlaps.MapOverlap;
-import org.osm2world.core.map_elevation.creation.EleConstraintEnforcer;
 import org.osm2world.core.map_elevation.data.EleConnector;
 import org.osm2world.core.map_elevation.data.GroundState;
 import org.osm2world.core.math.GeometryUtil;
+import org.osm2world.core.math.Vector3D;
 import org.osm2world.core.math.VectorXYZ;
 import org.osm2world.core.math.VectorXZ;
-import org.osm2world.core.target.Target;
-import org.osm2world.core.target.common.FaceTarget;
-import org.osm2world.core.target.common.material.Material;
-import org.osm2world.core.target.common.material.Materials;
+import org.osm2world.core.target.common.material.*;
 import org.osm2world.core.target.common.mesh.ExtrusionGeometry;
 import org.osm2world.core.target.common.mesh.Mesh;
 import org.osm2world.core.target.common.model.InstanceParameters;
 import org.osm2world.core.target.common.model.Model;
-import org.osm2world.core.target.povray.POVRayTarget;
-import org.osm2world.core.target.povray.RenderableToPOVRay;
+import org.osm2world.core.target.common.model.ModelInstance;
 import org.osm2world.core.world.data.*;
 import org.osm2world.core.world.modules.common.ConfigurableWorldModule;
 import org.osm2world.core.world.modules.common.WorldModuleBillboardUtil;
+import org.osm2world.core.world.modules.common.WorldModuleParseUtil;
 
 /**
  * adds trees, tree rows, tree groups and forests to the world
@@ -128,6 +123,63 @@ public class TreeModule extends ConfigurableWorldModule {
 
 	}
 
+	/**
+	 * @param height  tree height in meters
+	 * @param crownDiameter  diameter of the tree's crown in meters
+	 * @param trunkDiameter  diameter of the tree's trunk (at breast height) in meters, or null if unknown
+	 */
+	private record TreeDimensions(double height, double crownDiameter, @Nullable Double trunkDiameter) {
+
+		/**
+		 * parse height and other dimensions (optionally modified by some random factor for forests)
+		 *
+		 * @param random  randomness generator to slightly vary the values, can be set to null if no randomness is desired
+		 * @param model  used to get default ratios between dimensions, such as height to width. Optional.
+		 */
+		public static TreeDimensions fromTags(TagSet tags, @Nullable Random random, @Nullable TreeModel model,
+				double defaultHeight) {
+
+			double defaultHeightToWidth = model != null ? model.defaultHeightToWidth() : 2;
+			double defaultCrownToTrunk = 30;
+
+			double scaleFactor = random != null ? 0.5 + 0.75 * random.nextDouble() : 1.0;
+
+			Double trunkDiameter = parseMeasure(tags.getValue("diameter"));
+
+			if (trunkDiameter == null) {
+				Double trunkCircumference = parseMeasure(tags.getValue("circumference"));
+				if (trunkCircumference != null) {
+					trunkDiameter = trunkCircumference / PI;
+				}
+			}
+
+			Double crownDiameter = parseMeasure(tags.getValue("diameter_crown"));
+			Double height = parseMeasure(tags.getValue("height"));
+
+			if (height == null) {
+				height = parseMeasure(tags.getValue("est_height"));
+				if (height == null) {
+					if (crownDiameter != null) {
+						height = crownDiameter * defaultHeightToWidth;
+					} else if (trunkDiameter != null) {
+						height = trunkDiameter * defaultCrownToTrunk * defaultHeightToWidth;
+					} else {
+						height = defaultHeight;
+					}
+				}
+			}
+
+			if (crownDiameter == null) {
+				crownDiameter = height / defaultHeightToWidth;
+			}
+
+			return new TreeDimensions(scaleFactor * height,scaleFactor * crownDiameter,
+					trunkDiameter != null ? scaleFactor * trunkDiameter : null);
+
+		}
+
+	}
+
 	private boolean useBillboards = false;
 	private double defaultTreeHeight = 10;
 	private double defaultTreeHeightForest = 20;
@@ -171,95 +223,23 @@ public class TreeModule extends ConfigurableWorldModule {
 
 	}
 
-	private static final float TREE_RADIUS_PER_HEIGHT = 0.2f;
-
 	/**
-	 * parse height (for forests, add some random factor)
+	 * retrieves a suitable {@link TreeModel} from {@link #existingModels}, or creates it if necessary
+	 *
+	 * @param seed       an object to be used as the seed for random decisions
 	 */
-	private double getTreeHeight(MapElement element,
-			boolean isConiferousTree, boolean isFruitTree) {
+	private TreeModel getTreeModel(Vector3D seed, LeafType leafType, LeafCycle leafCycle, TreeSpecies species,
+			@Nullable TreeDimensions dimensions) {
 
-		float heightFactor = 1;
-		if (element instanceof MapArea) {
-			heightFactor = 0.5f + 0.75f * (float)Math.random();
-		}
+		var r = new Random((long)(seed.getX() * 10) + (long)(seed.getZ() * 10000));
 
-		double defaultHeight = defaultTreeHeight;
-		if (element instanceof MapArea && !isFruitTree) {
-			defaultHeight = defaultTreeHeightForest;
-		}
+		// "random" decision to flip the tree texture
+		boolean mirrored = r.nextBoolean();
 
-		return heightFactor *
-				parseHeight(element.getTags(), (float)defaultHeight);
-
-	}
-
-	private POVRayTarget previousDeclarationTarget = null;
-
-	private void addTreeDeclarationsTo(POVRayTarget target) {
-		if (target != previousDeclarationTarget) {
-
-			//TODO support any combination of leaf type and leaf cycle
-
-			previousDeclarationTarget = target;
-
-			target.append("#ifndef (broad_leaved_tree)\n");
-			target.append("#declare broad_leaved_tree = object { union {\n");
-			target.drawModel(new TreeGeometryModel(LeafType.BROADLEAVED, LeafCycle.DECIDUOUS, null),
-					new InstanceParameters(VectorXYZ.NULL_VECTOR, 0, 1.0, null, null));
-			target.append("} }\n#end\n\n");
-
-			target.append("#ifndef (coniferous_tree)\n");
-			target.append("#declare coniferous_tree = object { union {\n");
-			target.drawModel(new TreeGeometryModel(LeafType.NEEDLELEAVED, LeafCycle.EVERGREEN, null),
-					new InstanceParameters(VectorXYZ.NULL_VECTOR, 0, 1.0, null, null));
-			target.append("} }\n#end\n\n");
-
-		}
-	}
-
-	private void renderTreePovrayModel(POVRayTarget target, MapElement element, VectorXYZ pos,
-			LeafType leafType, LeafCycle leafCycle, TreeSpecies species) {
-
-		boolean isConiferousTree = (leafType == LeafType.NEEDLELEAVED);
-
-		double height = getTreeHeight(element, isConiferousTree, false);
-
-		//rotate randomly for variation
-		float yRotation = (float) Math.random() * 360;
-
-		//add union of stem and leaves
-		if (isConiferousTree) {
-			target.append("object { coniferous_tree rotate ");
-		} else {
-			target.append("object { broad_leaved_tree rotate ");
-		}
-
-		target.append(Float.toString(yRotation));
-		target.append("*y scale ");
-		target.append(height);
-		target.append(" translate ");
-		target.appendVector(pos.x, 0, pos.z);
-		target.append(" }\n");
-
-	}
-
-	private void renderTreeModel(Target target, MapElement element, VectorXYZ base,
-			LeafType leafType, LeafCycle leafCycle, TreeSpecies species) {
-
-		// "random" decision to flip the tree texture based on z coord
-		boolean mirrored = (long)(base.getZ() * 1000) % 2 == 0;
-
-		// if leaf type is unknown, make another "random" decision based on x coord
+		// if leaf type is unknown, make another random decision
 		if (leafType == null) {
-			if ((long)(base.getX() * 1000) % 2 == 0) {
-				leafType = LeafType.NEEDLELEAVED;
-			} else {
-				leafType = LeafType.BROADLEAVED;
-			}
+			leafType = r.nextBoolean() ? LeafType.NEEDLELEAVED : LeafType.BROADLEAVED;
 		}
-
-		double height = getTreeHeight(element, leafType == LeafType.NEEDLELEAVED, species != null);
 
 		TreeModel model = null;
 
@@ -268,6 +248,7 @@ public class TreeModule extends ConfigurableWorldModule {
 					&& existingModel.leafCycle() == leafCycle
 					&& existingModel.species() == species
 					&& existingModel.mirrored() == mirrored
+					&& Objects.equals(existingModel.dimensions(), dimensions)
 					&& (existingModel instanceof TreeBillboardModel) == useBillboards) {
 				model = existingModel;
 				break;
@@ -276,12 +257,12 @@ public class TreeModule extends ConfigurableWorldModule {
 
 		if (model == null) {
 			model = useBillboards
-					? new TreeBillboardModel(leafType, leafCycle, species, mirrored)
-					: new TreeGeometryModel(leafType, leafCycle, species);
+					? new TreeBillboardModel(leafType, leafCycle, species, mirrored, dimensions)
+					: new TreeGeometryModel(leafType, leafCycle, species, dimensions);
 			existingModels.add(model);
 		}
 
-		target.drawModel(model, new InstanceParameters(base, 0, height, null, null));
+		return model;
 
 	}
 
@@ -291,6 +272,8 @@ public class TreeModule extends ConfigurableWorldModule {
 		LeafCycle leafCycle();
 		@Nullable TreeSpecies species();
 		boolean mirrored();
+		double defaultHeightToWidth();
+		@Nullable TreeDimensions dimensions();
 
 	}
 
@@ -298,21 +281,43 @@ public class TreeModule extends ConfigurableWorldModule {
 			LeafType leafType,
 			LeafCycle leafCycle,
 			@Nullable TreeSpecies species,
-			boolean mirrored
+			boolean mirrored,
+			@Nullable TreeDimensions dimensions
 	) implements TreeModel {
 
 		@Override
 		public List<Mesh> buildMeshes(InstanceParameters params) {
 
-			Material material = species == TreeSpecies.APPLE_TREE
+			Material material = getMaterial();
+
+			return WorldModuleBillboardUtil.buildCrosstree(material, params.position(),
+					dimensions != null ? dimensions.crownDiameter : defaultHeightToWidth() * params.height(),
+					params.height(), mirrored);
+
+		}
+
+		private Material getMaterial() {
+			return species == TreeSpecies.APPLE_TREE
 					? Materials.TREE_BILLBOARD_BROAD_LEAVED_FRUIT
 					: leafType == LeafType.NEEDLELEAVED
 					? Materials.TREE_BILLBOARD_CONIFEROUS
 					: Materials.TREE_BILLBOARD_BROAD_LEAVED;
+		}
 
-			return WorldModuleBillboardUtil.buildCrosstree(material, params.position(),
-					(species != null ? 1.0 : 0.5) * params.height(), params.height(), mirrored);
-
+		@Override
+		public double defaultHeightToWidth() {
+			List<TextureLayer> textureLayers = getMaterial().getTextureLayers();
+			if (!textureLayers.isEmpty()) {
+				TextureData texture = textureLayers.get(0).baseColorTexture;
+				TextureDataDimensions textureDimensions = texture.dimensions();
+				if (textureDimensions.widthPerEntity() != null && textureDimensions.heightPerEntity() != null) {
+					return textureDimensions.heightPerEntity() / textureDimensions.widthPerEntity();
+				} else {
+					return 1.0 / texture.getAspectRatio();
+				}
+			} else {
+				return 2;
+			}
 		}
 
 	}
@@ -320,7 +325,8 @@ public class TreeModule extends ConfigurableWorldModule {
 	private record TreeGeometryModel(
 			LeafType leafType,
 			LeafCycle leafCycle,
-			@Nullable TreeSpecies species
+			@Nullable TreeSpecies species,
+			@Nullable TreeDimensions dimensions
 	) implements TreeModel {
 
 		@Override
@@ -337,15 +343,18 @@ public class TreeModule extends ConfigurableWorldModule {
 			boolean coniferous = (leafType == LeafType.NEEDLELEAVED);
 
 			double stemRatio = coniferous?0.3:0.5;
-			double radius = height*TREE_RADIUS_PER_HEIGHT;
+			double width = dimensions != null ? dimensions.crownDiameter : defaultHeightToWidth() * height;
+			double trunkRadius = dimensions != null && dimensions.trunkDiameter != null ? dimensions.trunkDiameter / 2
+					: width / 8;
 
 			ExtrusionGeometry trunk = ExtrusionGeometry.createColumn(null,
-					posXYZ, height*stemRatio,radius / 4, radius / 5,
+					posXYZ, height*stemRatio,trunkRadius, 0.8 * trunkRadius,
 					false, true, null, TREE_TRUNK.getTextureDimensions());
 
 			ExtrusionGeometry crown = ExtrusionGeometry.createColumn(null,
-					posXYZ.addY(height*stemRatio), height*(1-stemRatio), radius, coniferous ? 0 : radius,
-					true, true, null, TREE_CROWN.getTextureDimensions());
+					posXYZ.addY(height*stemRatio), height*(1-stemRatio), width / 2,
+					coniferous ? 0 : width / 2, true, true, null,
+					TREE_CROWN.getTextureDimensions());
 
 			return List.of(
 					new Mesh(trunk, TREE_TRUNK),
@@ -354,36 +363,43 @@ public class TreeModule extends ConfigurableWorldModule {
 
 		}
 
+		@Override
+		public double defaultHeightToWidth() {
+			return 2.5;
+		}
 	}
 
 	private final List<TreeModel> existingModels = new ArrayList<>();
 
-	public class Tree extends NoOutlineNodeWorldObject implements RenderableToPOVRay, LegacyWorldObject {
+	public class Tree extends NoOutlineNodeWorldObject implements ProceduralWorldObject {
 
-		private final LeafType leafType;
-		private final LeafCycle leafCycle;
-		private final TreeSpecies species;
+		private final TreeDimensions dimensions;
+		private final TreeModel model;
 
 		public Tree(MapNode node) {
 
 			super(node);
 
-			LeafType leafType = LeafType.getValue(node.getTags());
-			LeafCycle leafCycle = LeafCycle.getValue(node.getTags());
-			TreeSpecies species = TreeSpecies.getValue(node.getTags());
+			TagSet tags = node.getTags();
+
+			/* inherit information from the tree row this tree belongs to, if any */
 
 			Optional<MapWaySegment> parentTreeRow = node.getConnectedWaySegments().stream()
 					.filter(s -> s.getTags().contains("natural", "tree_row")).findAny();
 			if (parentTreeRow.isPresent()) {
-				// inherit information from the tree row this tree belongs to
-				if (leafType == null) leafType = LeafType.getValue(parentTreeRow.get().getTags());
-				if (leafCycle == null) leafCycle = LeafCycle.getValue(parentTreeRow.get().getTags());
-				if (species == null) species = TreeSpecies.getValue(parentTreeRow.get().getTags());
+				tags = WorldModuleParseUtil.inheritTags(tags, parentTreeRow.get().getTags());
 			}
 
-			this.leafType = leafType;
-			this.leafCycle = leafCycle;
-			this.species = species;
+			/* interpret the tags */
+
+			var leafType = LeafType.getValue(tags);
+			var leafCycle = LeafCycle.getValue(tags);
+			var species = TreeSpecies.getValue(tags);
+
+			TreeModel dimensionlessModel = getTreeModel(node.getPos(), leafType, leafCycle, species, null);
+			dimensions = TreeDimensions.fromTags(tags, null, dimensionlessModel, defaultTreeHeight);
+			model = getTreeModel(node.getPos(), leafType, leafCycle, species, dimensions);
+
 		}
 
 		@Override
@@ -392,22 +408,13 @@ public class TreeModule extends ConfigurableWorldModule {
 		}
 
 		@Override
-		public void renderTo(Target target) {
-			if (target instanceof POVRayTarget) {
-				renderTreePovrayModel((POVRayTarget)target, node, getBase(), leafType, leafCycle, species);
-			} else {
-				renderTreeModel(target, node, getBase(), leafType, leafCycle, species);
-			}
-		}
-
-		@Override
-		public void addDeclarationsTo(POVRayTarget target) {
-			addTreeDeclarationsTo(target);
+		public void buildMeshesAndModels(Target target) {
+			target.addSubModel(new ModelInstance(model, new InstanceParameters(getBase(), 0, dimensions.height)));
 		}
 
 	}
 
-	public class TreeRow implements WaySegmentWorldObject, RenderableToPOVRay, LegacyWorldObject {
+	public class TreeRow implements WaySegmentWorldObject, ProceduralWorldObject {
 
 		private final MapWaySegment segment;
 
@@ -472,35 +479,19 @@ public class TreeModule extends ConfigurableWorldModule {
 		}
 
 		@Override
-		public void defineEleConstraints(EleConstraintEnforcer enforcer) {}
-
-		@Override
 		public GroundState getGroundState() {
 			return GroundState.ON;
 		}
 
 		@Override
-		public void addDeclarationsTo(POVRayTarget target) {
-			addTreeDeclarationsTo(target);
-		}
-
-		@Override
-		public void renderTo(Target target) {
+		public void buildMeshesAndModels(Target target) {
 
 			for (EleConnector treeConnector : treeConnectors) {
-
-				if (target instanceof POVRayTarget) {
-					renderTreePovrayModel((POVRayTarget)target, segment, treeConnector.getPosXYZ(),
-							leafType, leafCycle, species);
-				} else {
-					renderTreeModel(target, segment, treeConnector.getPosXYZ(),
-							leafType, leafCycle, species);
-				}
-
-				if (target instanceof FaceTarget) {
-					((FaceTarget)target).flushReconstructedFaces();
-				}
-
+				VectorXYZ pos = treeConnector.getPosXYZ();
+				TreeModel treeModel = getTreeModel(pos, leafType, leafCycle, species, null);
+				TreeDimensions dimensions = TreeDimensions.fromTags(segment.getTags(), null, treeModel, defaultTreeHeight);
+				treeModel = getTreeModel(pos, leafType, leafCycle, species, dimensions);
+				target.addSubModel(new ModelInstance(treeModel, new InstanceParameters(pos, 0, dimensions.height)));
 			}
 
 		}
@@ -510,7 +501,7 @@ public class TreeModule extends ConfigurableWorldModule {
 	}
 
 
-	public class Forest implements AreaWorldObject, RenderableToPOVRay, LegacyWorldObject {
+	public class Forest extends CachingProceduralWorldObject implements AreaWorldObject {
 
 		private final MapArea area;
 		private final MapData mapData;
@@ -581,35 +572,20 @@ public class TreeModule extends ConfigurableWorldModule {
 		}
 
 		@Override
-		public void defineEleConstraints(EleConstraintEnforcer enforcer) {}
-
-		@Override
 		public GroundState getGroundState() {
 			return GroundState.ON;
 		}
 
 		@Override
-		public void addDeclarationsTo(POVRayTarget target) {
-			addTreeDeclarationsTo(target);
-		}
-
-		@Override
-		public void renderTo(Target target) {
+		public void buildMeshesAndModels(Target target) {
 
 			for (EleConnector treeConnector : treeConnectors) {
-
-				if (target instanceof POVRayTarget) {
-					renderTreePovrayModel((POVRayTarget)target, area, treeConnector.getPosXYZ(),
-							leafType, leafCycle, species);
-				} else {
-					renderTreeModel(target, area, treeConnector.getPosXYZ(),
-							leafType, leafCycle, species);
-				}
-
-				if (target instanceof FaceTarget) {
-					((FaceTarget)target).flushReconstructedFaces();
-				}
-
+				VectorXYZ pos = treeConnector.getPosXYZ();
+				TreeModel treeModel = getTreeModel(pos, leafType, leafCycle, species, null);
+				TreeDimensions dimensions = TreeDimensions.fromTags(area.getTags(), new Random(area.getId()), treeModel,
+						area.getTags().contains("landuse", "orchard") ? defaultTreeHeight : defaultTreeHeightForest);
+				treeModel = getTreeModel(pos, leafType, leafCycle, species, dimensions);
+				target.addSubModel(new ModelInstance(treeModel, new InstanceParameters(pos, 0, dimensions.height)));
 			}
 
 		}

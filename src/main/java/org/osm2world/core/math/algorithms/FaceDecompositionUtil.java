@@ -2,29 +2,23 @@ package org.osm2world.core.math.algorithms;
 
 import static java.util.Collections.min;
 import static java.util.Comparator.comparingDouble;
-import static java.util.stream.Collectors.*;
+import static java.util.stream.Collectors.toList;
+import static java.util.stream.Collectors.toSet;
+import static org.osm2world.core.math.AxisAlignedRectangleXZ.bboxUnion;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
-import org.osm2world.core.math.LineSegmentXZ;
-import org.osm2world.core.math.PolygonWithHolesXZ;
-import org.osm2world.core.math.SimplePolygonXZ;
-import org.osm2world.core.math.VectorXZ;
+import org.osm2world.core.conversion.ConversionLog;
+import org.osm2world.core.math.*;
 import org.osm2world.core.math.algorithms.LineSegmentIntersectionFinder.Intersection;
+import org.osm2world.core.math.datastructures.IndexGrid;
+import org.osm2world.core.math.datastructures.SpatialIndex;
 import org.osm2world.core.math.shapes.PolygonShapeXZ;
 import org.osm2world.core.math.shapes.ShapeXZ;
 
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Multimap;
+import com.google.common.collect.Streams;
 
 /** utilities for finding the faces in a graph of line segments */
 public final class FaceDecompositionUtil {
@@ -35,15 +29,42 @@ public final class FaceDecompositionUtil {
 	private FaceDecompositionUtil() {}
 
 	public static final Collection<PolygonWithHolesXZ> splitPolygonIntoFaces(PolygonShapeXZ polygon,
-			Iterable<? extends ShapeXZ> otherShapes) {
+			Collection<? extends PolygonShapeXZ> holes, Collection<? extends ShapeXZ> otherShapes) {
 
 		List<LineSegmentXZ> segments = new ArrayList<>();
 		polygon.getRings().forEach(r -> segments.addAll(r.getSegments()));
-		otherShapes.forEach(s -> segments.addAll(s.getSegments()));
+		holes.forEach(it -> it.getRings().forEach(r -> segments.addAll(r.getSegments())));
+		otherShapes.forEach(s -> { if (s instanceof PolygonShapeXZ p) {
+			p.getRings().forEach(r -> segments.addAll(r.getSegments()));
+		} else {
+			segments.addAll(s.getSegments());
+		}});
 
 		Collection<PolygonWithHolesXZ> result = facesFromGraph(segments);
 		result.removeIf(p -> !polygon.contains(p.getPointInside()));
+		removeFacesInHoles(result, holes);
 		return result;
+
+	}
+
+	private static void removeFacesInHoles(Collection<PolygonWithHolesXZ> faces,
+			Collection<? extends PolygonShapeXZ> holes) {
+
+		if (!holes.isEmpty()) {
+
+			SpatialIndex<PolygonShapeXZ> index = (holes.size() > 40)
+					? new IndexGrid<>(bboxUnion(holes), 20.0, 20.0)
+					: null;
+
+			if (index != null) { holes.forEach(index::insert); }
+
+			faces.removeIf(f -> {
+				Iterable<? extends PolygonShapeXZ> nearbyHoles = index == null ? holes : index.probe(f);
+				VectorXZ faceCenter = f.getPointInside();
+				return Streams.stream(nearbyHoles).anyMatch(hole -> hole.contains(faceCenter));
+			});
+
+		}
 
 	}
 
@@ -65,10 +86,10 @@ public final class FaceDecompositionUtil {
 		List<Intersection<LineSegmentXZ>> newIntersections = new ArrayList<>();
 		for (Iterator<Intersection<LineSegmentXZ>> iterator = intersections.iterator(); iterator.hasNext();) {
 			Intersection<LineSegmentXZ> intersection = iterator.next();
-			VectorXZ closestKnownPoint = knownPoints.stream().min(comparingDouble(intersection.pos::distanceTo)).get();
-			if (closestKnownPoint.distanceTo(intersection.pos) < SNAP_DISTANCE) {
+			VectorXZ closestKnownPoint = knownPoints.stream().min(comparingDouble(intersection.pos()::distanceTo)).get();
+			if (closestKnownPoint.distanceTo(intersection.pos()) < SNAP_DISTANCE) {
 				iterator.remove();
-				newIntersections.add(new Intersection<>(closestKnownPoint, intersection.segmentA, intersection.segmentB));
+				newIntersections.add(new Intersection<>(closestKnownPoint, intersection.segmentA(), intersection.segmentB()));
 			}
 		}
 		intersections.addAll(newIntersections);
@@ -77,8 +98,8 @@ public final class FaceDecompositionUtil {
 
 		Multimap<LineSegmentXZ, VectorXZ> intersectionPointsPerSegment = HashMultimap.create(); //deduplicates values
 		for (Intersection<LineSegmentXZ> intersection : intersections) {
-			intersectionPointsPerSegment.put(intersection.segmentA, intersection.pos);
-			intersectionPointsPerSegment.put(intersection.segmentB, intersection.pos);
+			intersectionPointsPerSegment.put(intersection.segmentA(), intersection.pos());
+			intersectionPointsPerSegment.put(intersection.segmentB(), intersection.pos());
 		}
 		for (LineSegmentXZ segment : segments) {
 			intersectionPointsPerSegment.putAll(segment, segment.vertices());
@@ -151,6 +172,7 @@ public final class FaceDecompositionUtil {
 		Set<LineSegmentXZ> remainingEdges = new HashSet<>(directedEdges);
 		List<SimplePolygonXZ> faces = new ArrayList<>();
 
+		outer:
 		while (!remainingEdges.isEmpty()) {
 
 			LinkedList<LineSegmentXZ> currentPath = new LinkedList<>();
@@ -167,12 +189,21 @@ public final class FaceDecompositionUtil {
 
 				currentPath.add(outgoingEdges.get(outgoingIndex));
 
+				if (currentPath.size() > 10000) {
+					// likely an infinite loop
+					// FIXME: debug the causes of this kind of problem
+					ConversionLog.error("Path too long while attempting to build a face");
+					break outer;
+				}
+
 			}
 
 			remainingEdges.removeAll(currentPath);
 
 			List<VectorXZ> vertexLoop = currentPath.stream().map(e -> e.p1).collect(toList());
-			faces.add(new SimplePolygonXZ(vertexLoop));
+			try {
+				faces.add(new SimplePolygonXZ(vertexLoop));
+			} catch (InvalidGeometryException ignored) { /* skip tiny or degenerate face */ }
 
 		}
 

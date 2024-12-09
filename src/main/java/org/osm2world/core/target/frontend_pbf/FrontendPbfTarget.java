@@ -53,6 +53,7 @@ import org.osm2world.core.target.common.mesh.TriangleGeometry;
 import org.osm2world.core.target.common.model.ExternalResourceModel;
 import org.osm2world.core.target.common.model.InstanceParameters;
 import org.osm2world.core.target.common.model.Model;
+import org.osm2world.core.target.common.model.ModelInstance;
 import org.osm2world.core.target.common.texcoord.GlobalXZTexCoordFunction;
 import org.osm2world.core.target.frontend_pbf.FrontendPbf.*;
 import org.osm2world.core.target.frontend_pbf.FrontendPbf.Animation.AnimationType;
@@ -91,7 +92,7 @@ public class FrontendPbfTarget extends MeshTarget {
 	private enum TextureAtlasMode { ALWAYS, RUNTIME_ONLY, NEVER };
 
 	private final List<Class<? extends WorldObject>> LOD_2_FEATURES = asList(HandRail.class, WasteBasket.class,
-			VendingMachineVice.class, PostBox.class, Bench.class, GritBin.class, BollardRow.class);
+			VendingMachine.class, PostBox.class, Bench.class, GritBin.class, BollardRow.class);
 
 	/**
 	 * materials which default to being shadowless
@@ -255,9 +256,9 @@ public class FrontendPbfTarget extends MeshTarget {
 	}
 
 	@Override
-	public void drawModel(Model model, InstanceParameters params) {
+	public void drawModel(ModelInstance modelInstance) {
 
-		if (!bbox.contains(params.position().xz())) return;
+		if (!bbox.contains(modelInstance.params().position().xz())) return;
 
 		MeshMetadata worldObjectMetadata = new MeshMetadata(currentWorldObject.getPrimaryMapElement().getElementWithId(),
 				currentWorldObject.getClass());
@@ -267,7 +268,7 @@ public class FrontendPbfTarget extends MeshTarget {
 		}
 
 		Multimap<Model, InstanceParameters> map = modelInstancesByWO.get(worldObjectMetadata);
-		map.put(model, params);
+		map.put(modelInstance.model(), modelInstance.params());
 
 	}
 
@@ -407,7 +408,7 @@ public class FrontendPbfTarget extends MeshTarget {
 	}
 
 	private FrontendPbf.WorldObject convertModel(Model m, @Nullable TextureAtlasGroup textureAtlasGroup) {
-		InstanceParameters params = new InstanceParameters(NULL_VECTOR, 0.0, 1.0, null, null);
+		InstanceParameters params = new InstanceParameters(NULL_VECTOR, 0.0, 1.0);
 		List<Mesh> meshes = m.buildMeshes(params);
 		if (textureAtlasGroup != null) {
 			var tempMeshStore = new MeshStore(meshes, null);
@@ -449,8 +450,8 @@ public class FrontendPbfTarget extends MeshTarget {
 
 				List<Mesh> meshesAtLod = new ArrayList<>();
 				for (Mesh m : meshes) {
-					if (m.lodRangeMin == LevelOfDetail.values()[minLod]
-							&& m.lodRangeMax == LevelOfDetail.values()[maxLod]) {
+					if (m.lodRange.min() == LevelOfDetail.fromInt(minLod)
+							&& m.lodRange.max() == LevelOfDetail.fromInt(maxLod)) {
 						meshesAtLod.add(m);
 					}
 				}

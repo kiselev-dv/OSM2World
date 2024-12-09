@@ -1,7 +1,8 @@
 package org.osm2world.core.target.common.material;
 
 import static java.awt.Color.*;
-import static java.util.Collections.*;
+import static java.util.Collections.emptyList;
+import static org.osm2world.core.util.ConfigUtil.readEnum;
 
 import java.awt.Color;
 import java.awt.Font;
@@ -12,20 +13,18 @@ import java.util.Map.Entry;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 import javax.annotation.Nullable;
 
 import org.apache.commons.configuration.Configuration;
-import org.osm2world.core.target.common.material.Material.*;
+import org.osm2world.core.target.common.material.Material.Interpolation;
+import org.osm2world.core.target.common.material.Material.Transparency;
 import org.osm2world.core.target.common.material.TextTexture.FontStyle;
 import org.osm2world.core.target.common.material.TextureData.Wrap;
 import org.osm2world.core.target.common.texcoord.NamedTexCoordFunction;
 import org.osm2world.core.target.common.texcoord.TexCoordFunction;
 import org.osm2world.core.util.ConfigUtil;
 import org.osm2world.core.world.creation.WorldModule;
-
-import com.google.common.collect.Streams;
 
 /**
  * this class defines materials that can be used by all {@link WorldModule}s
@@ -297,7 +296,7 @@ public final class Materials {
 	}
 
 	/** returns all materials defined here */
-	public static final Collection<ConfMaterial> getMaterials() {
+	synchronized public static final Collection<ConfMaterial> getMaterials() {
 		return fieldNameMap.keySet();
 	}
 
@@ -306,7 +305,7 @@ public final class Materials {
 	 *
 	 * @param name  case-insensitive name of the material
 	 */
-	public static final @Nullable ConfMaterial getMaterial(@Nullable String name) {
+	synchronized public static final @Nullable ConfMaterial getMaterial(@Nullable String name) {
 
 		if (name == null) return null;
 
@@ -333,18 +332,18 @@ public final class Materials {
 	}
 
 	/** variant of {@link #getMaterial(String)} with a default value */
-	public static final Material getMaterial(@Nullable String name, Material defaultValue) {
+	synchronized public static final Material getMaterial(@Nullable String name, Material defaultValue) {
 		Material result = getMaterial(name);
 		return result == null ? defaultValue : result;
 	}
 
 	/** returns a material for a surface value; null if none is found */
-	public static final Material getSurfaceMaterial(String value) {
+	synchronized public static final Material getSurfaceMaterial(String value) {
 		return getSurfaceMaterial(value, null);
 	}
 
 	/** same as {@link #getSurfaceMaterial(String)}, but with fallback value */
-	public static final Material getSurfaceMaterial(String value, Material fallback) {
+	synchronized public static final Material getSurfaceMaterial(String value, Material fallback) {
 		Material material = value == null ? null : surfaceMaterialMap.get(value);
 		if (material != null) {
 			return material;
@@ -357,119 +356,108 @@ public final class Materials {
 	 * returns a human-readable, unique name for a material defined
 	 * within this class, null for all other materials.
 	 */
-	public static final String getUniqueName(Material material) {
+	synchronized public static final String getUniqueName(Material material) {
 		return fieldNameMap.get(material);
 	}
 
-	private static final String CONF_KEY_REGEX =
-					"material_(.+)_(interpolation|color|doubleSided|shadow|ssao|transparency|texture\\d*_.+)";
+	private static final Pattern CONF_KEY_PATTERN = Pattern.compile(
+					"material_(.+)_(interpolation|color|doubleSided|shadow|ssao|transparency|texture\\d*_.+)");
 
 	/**
 	 * configures the attributes of the materials within this class
 	 * based on external configuration settings
 	 */
-	public static final void configureMaterials(Configuration config) {
+	synchronized public static final void configureMaterials(Configuration config) {
 
 		externalMaterials.clear();
 
-		Map<String, ConfMaterial> texturePrefixMap = new HashMap<>();
+		/* find all material-related properties and organize them by material */
+
+		Map<String, Set<String>> attributesPerMaterialName = new HashMap<>();
 
 		Iterator<String> keyIterator = config.getKeys();
 
 		while (keyIterator.hasNext()) {
-
 			String key = keyIterator.next();
-
-			Matcher matcher = Pattern.compile(CONF_KEY_REGEX).matcher(key);
-
+			Matcher matcher = CONF_KEY_PATTERN.matcher(key);
 			if (matcher.matches()) {
-
 				String materialName = matcher.group(1);
-				ConfMaterial material = getMaterial(materialName);
-
-				/* If material is not defined in Materials.java, create new material
-				 * and add it to externalMaterials map */
-				if (material == null) {
-					material = new ConfMaterial(Interpolation.FLAT, Color.white);
-					externalMaterials.put(materialName, material);
+				if (!attributesPerMaterialName.containsKey(materialName)) {
+					attributesPerMaterialName.put(materialName, new HashSet<>());
 				}
-
-				String attribute = matcher.group(2);
-
-				if ("interpolation".equals(attribute)) {
-
-					String value = config.getString(key).toUpperCase();
-					Interpolation interpolation = Interpolation.valueOf(value);
-
-					if (interpolation != null) {
-						material.setInterpolation(interpolation);
-					}
-
-				} else if ("color".equals(attribute)) {
-
-					Color color = ConfigUtil.parseColor(
-							config.getString(key));
-
-					if (color != null) {
-						material.setColor(color);
-					} else {
-						System.err.println("incorrect color value: "
-								+ config.getString(key));
-					}
-
-				} else if ("doubleSided".equals(attribute)) {
-
-					boolean doubleSided = config.getBoolean(key);
-					material.setDoubleSided(doubleSided);
-
-				} else if ("shadow".equals(attribute)) {
-
-					String value = config.getString(key).toUpperCase();
-					Shadow shadow = Shadow.valueOf(value);
-
-					if (shadow != null) {
-						material.setShadow(shadow);
-					}
-
-				} else if ("ssao".equals(attribute)) {
-
-					String value = config.getString(key).toUpperCase();
-					AmbientOcclusion ao = AmbientOcclusion.valueOf(value);
-
-					if (ao != null) {
-						material.setAmbientOcclusion(ao);
-					}
-
-				} else if ("transparency".equals(attribute)) {
-
-					String value = config.getString(key).toUpperCase();
-					Transparency transparency = Transparency.valueOf(value);
-
-					if (transparency != null) {
-						material.setTransparency(transparency);
-					}
-
-				} else if (attribute.startsWith("texture")) {
-
-					texturePrefixMap.put("material_" + materialName + "_texture", material);
-
-				} else {
-					System.err.println("unknown material attribute: " + attribute);
-				}
+				attributesPerMaterialName.get(materialName).add(matcher.group(2));
 			}
 		}
 
-		/* configure texture layers */
+		/* create each material */
 
-		for (String texturePrefix : texturePrefixMap.keySet()) {
+		for (var entry : attributesPerMaterialName.entrySet()) {
+
+			String materialName = entry.getKey();
+			Set<String> attributes = entry.getValue();
+
+			ConfMaterial material = getMaterial(materialName);
+
+			/* If material is not defined in Materials.java, create new material
+			 * and add it to externalMaterials map */
+			if (material == null) {
+				material = new ConfMaterial(Interpolation.FLAT, Color.white);
+				externalMaterials.put(materialName, material);
+			}
+
+			String keyPrefix = "material_" + materialName + "_";
+
+			for (String attribute : attributes) {
+
+				String key = keyPrefix + attribute;
+
+				switch (attribute) {
+					case "doubleSided" -> {
+						boolean doubleSided = config.getBoolean(key);
+						material.setDoubleSided(doubleSided);
+					}
+					case "interpolation" -> {
+						Interpolation interpolation = readEnum(Interpolation.class, config, key);
+						if (interpolation != null) { material.setInterpolation(interpolation); }
+					}
+					case "shadow" -> {
+						Material.Shadow shadow = readEnum(Material.Shadow.class, config, key);
+						if (shadow != null) { material.setShadow(shadow); }
+					}
+					case "ssao" -> {
+						Material.AmbientOcclusion ao = readEnum(Material.AmbientOcclusion.class, config, key);
+						if (ao != null) { material.setAmbientOcclusion(ao); }
+					}
+					case "transparency" -> {
+						Transparency transparency = readEnum(Transparency.class, config, key);
+						if (transparency != null) { material.setTransparency(transparency); }
+					}
+					case "color" -> {
+						Color color = ConfigUtil.parseColor(config.getString(key));
+						if (color != null) {
+							material.setColor(color);
+						} else {
+							System.err.println("incorrect color value: " + config.getString(key));
+						}
+					}
+					default -> {
+						if (!attribute.startsWith("texture")) {
+							System.err.println("unknown material attribute '" + attribute + "' for material " + materialName);
+						}
+					}
+				}
+
+			}
+
+			/* configure texture layers */
 
 			List<TextureLayer> textureLayers = new ArrayList<>();
 
 			for (int i = 0; i < Material.MAX_TEXTURE_LAYERS; i++) {
-				String keyPrefix = texturePrefix + i;
-				Stream<String> keyStream = Streams.stream(config.getKeys());
-				if (keyStream.anyMatch(k -> k.startsWith(keyPrefix))) {
-					TextureLayer textureLayer = createTextureLayer(config, keyPrefix);
+				String attribute = "texture" + i;
+				if (attributes.stream().anyMatch(a -> a.startsWith(attribute))) {
+					boolean implicitColorTexture = attributes.stream().noneMatch(a -> a.startsWith(attribute + "_color_"));
+					TextureLayer textureLayer = createTextureLayer(config, keyPrefix + attribute, implicitColorTexture);
 					if (textureLayer != null) {
 						textureLayers.add(textureLayer);
 					}
@@ -478,13 +466,13 @@ public final class Materials {
 				}
 			}
 
-			texturePrefixMap.get(texturePrefix).setTextureLayers(textureLayers);
+			material.setTextureLayers(textureLayers);
 
 		}
 
 	}
 
-	private static @Nullable TextureLayer createTextureLayer(Configuration config, String keyPrefix) {
+	private static @Nullable TextureLayer createTextureLayer(Configuration config, String keyPrefix, boolean implicitColorTexture) {
 
 		File baseColorTexture = null;
 		File ormTexture = null;
@@ -511,15 +499,8 @@ public final class Materials {
 			}
 		}
 
-		TextureData baseColorTextureData;
-
-		Stream<String> keyStream = Streams.stream(config.getKeys());
-		if (keyStream.anyMatch(k -> k.startsWith(keyPrefix + "_color_"))) {
-			baseColorTextureData = createTextureData(config, keyPrefix + "_color", baseColorTexture);
-		} else {
-			// allow omitting _color for backwards compatibility
-			baseColorTextureData = createTextureData(config, keyPrefix, baseColorTexture);
-		}
+		TextureData baseColorTextureData = createTextureData(
+				config, keyPrefix + (implicitColorTexture ? "" : "_color"), baseColorTexture);
 
 		if (baseColorTextureData == null) {
 			System.err.println("Config is missing base color texture for " + keyPrefix);

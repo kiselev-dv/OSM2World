@@ -7,6 +7,7 @@ import static java.util.Collections.emptyList;
 import static java.util.Collections.unmodifiableList;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toList;
+import static org.osm2world.core.util.ValueParseUtil.ValueConstraint.NONNEGATIVE;
 import static org.osm2world.core.util.ValueParseUtil.*;
 import static org.osm2world.core.world.modules.common.WorldModuleParseUtil.inheritTags;
 import static org.osm2world.core.world.modules.common.WorldModuleParseUtil.parseHeight;
@@ -18,6 +19,7 @@ import java.util.stream.IntStream;
 import javax.annotation.Nullable;
 
 import org.osm2world.core.conversion.ConversionLog;
+import org.osm2world.core.map_data.data.MapRelation;
 import org.osm2world.core.map_data.data.TagSet;
 import org.osm2world.core.math.shapes.PolygonShapeXZ;
 import org.osm2world.core.world.modules.building.LevelAndHeightData.Level.LevelType;
@@ -98,7 +100,7 @@ public class LevelAndHeightData {
 	 * If available, explicitly tagged data is used, with tags on indoor=level elements having the highest priority.
 	 */
 	public LevelAndHeightData(TagSet buildingTags, TagSet buildingPartTags, Map<Integer, TagSet> levelTagSets,
-			String roofShape, PolygonShapeXZ outline) {
+							  String roofShape, PolygonShapeXZ outline, MapRelation.Element element) {
 
 		BuildingDefaults defaults = BuildingDefaults.getDefaultsFor(inheritTags(buildingPartTags, buildingTags));
 
@@ -109,23 +111,26 @@ public class LevelAndHeightData {
 
 		/* determine level information from Simple 3D Buildings tagging */
 
-		Double parsedLevels = parseOsmDecimal(tags.getValue("building:levels"), false);
-
-		int buildingLevels;
-		if (parsedLevels != null) {
-			buildingLevels = max(0, (int)(double)parsedLevels);
-		} else if (parseHeight(tags, -1) > 0) {
-			buildingLevels = max(1, (int) (parseHeight(tags, -1) / defaults.heightPerLevel));
-		} else {
-			buildingLevels = defaults.levels;
-		}
-
 		final int buildingMinLevel = parseInt(tags.getValue("building:min_level"), 0);
 		final int buildingUndergroundLevels = parseUInt(tags.getValue("building:levels:underground"), 0);
 
 		final int buildingMinLevelWithUnderground = (buildingMinLevel > 0)
 				? buildingMinLevel
 				: min(buildingMinLevel, -1 * buildingUndergroundLevels);
+
+		Double parsedLevels = parseOsmDecimal(tags.getValue("building:levels"), NONNEGATIVE);
+
+		int buildingLevels;
+		if (parsedLevels != null) {
+			buildingLevels = max(0, (int)(double)parsedLevels);
+		} else if (parseHeight(tags, -1) > 0) {
+			buildingLevels = max(buildingMinLevelWithUnderground + 1,
+					max(1, (int) (parseHeight(tags, -1) / defaults.heightPerLevel)));
+		} else if (buildingMinLevelWithUnderground > 0) {
+			buildingLevels = buildingMinLevelWithUnderground + 1;
+		} else {
+			buildingLevels = defaults.levels;
+		}
 
 		/* determine roof height and roof levels */
 
@@ -160,6 +165,11 @@ public class LevelAndHeightData {
 			roofLevels = 0;
 		}
 
+
+		if (buildingLevels + roofLevels < buildingMinLevelWithUnderground + 1) {
+			throw new IllegalArgumentException("Min level exceeds total building levels for " + element);
+		}
+
 		/* determine building height */
 
 		double height = parseHeight(tags, buildingLevels * defaults.heightPerLevel + roofHeight);
@@ -179,7 +189,7 @@ public class LevelAndHeightData {
 		}
 
 		if (minHeight > heightWithoutRoof) {
-			ConversionLog.warn("min_height exceeds building (part) height without roof");
+			ConversionLog.warn("min_height exceeds building (part) height without roof", element);
 			minHeight = heightWithoutRoof - 0.1;
 		}
 
@@ -213,10 +223,10 @@ public class LevelAndHeightData {
 
 		if (minLevel != null && maxLevel != null) {
 			if (minLevel > maxLevel) {
-				ConversionLog.warn("min_level is larger than max_level");
+				ConversionLog.warn("min_level is larger than max_level", element);
 				ignoreIndoorLevelNumbers = true;
 			} else if ((maxLevel - minLevel) + 1 - nonExistentLevels.size() != totalLevels) {
-				ConversionLog.warn("min_level, max_level and non_existent_levels do not match S3DB levels");
+				ConversionLog.warn("min_level, max_level and non_existent_levels do not match S3DB levels", element);
 				ignoreIndoorLevelNumbers = true;
 			}
 		} else if (minLevel != null && maxLevel == null) {
@@ -270,7 +280,7 @@ public class LevelAndHeightData {
 			defaultLevelHeights.put(LevelType.UNDERGROUND, defaults.heightPerLevel);
 
 			if (defaultLevelHeights.values().stream().anyMatch(it -> it < 0)) {
-				ConversionLog.warn("Sum of explicit level heights exceeds total available height, ignoring them.");
+				ConversionLog.warn("Sum of explicit level heights exceeds total available height, ignoring them.", element);
 				explicitLevelHeights.clear();
 				defaultLevelHeights.clear();
 			}

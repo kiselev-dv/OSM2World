@@ -11,6 +11,8 @@ import static org.osm2world.core.math.algorithms.FaceDecompositionUtil.splitPoly
 import static org.osm2world.core.math.algorithms.TriangulationUtil.triangulate;
 import static org.osm2world.core.target.common.ExtrudeOption.END_CAP;
 import static org.osm2world.core.target.common.material.Materials.STEEL;
+import static org.osm2world.core.target.common.mesh.LevelOfDetail.LOD0;
+import static org.osm2world.core.target.common.mesh.LevelOfDetail.LOD4;
 import static org.osm2world.core.target.common.texcoord.NamedTexCoordFunction.STRIP_WALL;
 import static org.osm2world.core.target.common.texcoord.TexCoordUtil.texCoordLists;
 import static org.osm2world.core.target.common.texcoord.TexCoordUtil.triangleTexCoordLists;
@@ -23,10 +25,12 @@ import java.util.*;
 import org.osm2world.core.math.*;
 import org.osm2world.core.math.algorithms.JTSBufferUtil;
 import org.osm2world.core.math.shapes.*;
-import org.osm2world.core.target.Target;
+import org.osm2world.core.target.CommonTarget;
 import org.osm2world.core.target.common.ExtrudeOption;
 import org.osm2world.core.target.common.material.Material;
+import org.osm2world.core.target.common.mesh.LODRange;
 import org.osm2world.core.util.enums.LeftRightBoth;
+import org.osm2world.core.world.data.ProceduralWorldObject;
 import org.osm2world.core.world.modules.building.WindowParameters.RegionProperties;
 import org.osm2world.core.world.modules.building.WindowParameters.WindowRegion;
 
@@ -213,7 +217,7 @@ public class GeometryWindow implements Window {
 
 		if (regionBorderSegment == null) {
 			minAngle = Angle.ofDegrees(0);
-			step = Angle.ofDegrees(360 / panesHorizontal);
+			step = Angle.ofDegrees(360.0 / panesHorizontal);
 		} else {
 			// TODO: to support other regions than TOP, use regionBorderSegment's direction
 			minAngle = Angle.ofDegrees(270);
@@ -246,7 +250,7 @@ public class GeometryWindow implements Window {
 	}
 
 	@Override
-	public void renderTo(Target target, WallSurface surface) {
+	public void renderTo(CommonTarget target, WallSurface surface) {
 
 		VectorXYZ windowNormal = surface.normalAt(outline().getCentroid());
 
@@ -255,14 +259,35 @@ public class GeometryWindow implements Window {
 
 		/* draw the window pane */
 
-		Material paneMaterial = transparent ? params.transparentWindowMaterial : params.opaqueWindowMaterial;
-
 		List<TriangleXZ> paneTrianglesXZ = paneOutline.getTriangulation();
 		List<TriangleXYZ> paneTriangles = paneTrianglesXZ.stream()
 				.map(t -> surface.convertTo3D(t).shift(toBack))
 				.collect(toList());
-		target.drawTriangles(paneMaterial, paneTriangles,
-				triangleTexCoordLists(paneTriangles, paneMaterial, surface::texCoordFunction));
+
+		if (transparent) {
+			LODRange previousLodRange = null;
+			boolean skip = false;
+			if (target instanceof ProceduralWorldObject.Target t) {
+				previousLodRange = t.getCurrentLodRange();
+				// intersect with previousLodRange to avoid loosening LOD, e.g. if GeometryWindow is only used at LOD4
+				var lodRange = LODRange.intersection(previousLodRange, new LODRange(BuildingPart.INDOOR_MIN_LOD, LOD4));
+				t.setCurrentLodRange(lodRange);
+				skip = (lodRange == null);
+			}
+			if (!skip) {
+				target.drawTriangles(params.transparentWindowMaterial, paneTriangles,
+						triangleTexCoordLists(paneTriangles, params.transparentWindowMaterial, surface::texCoordFunction));
+			}
+			if (target instanceof ProceduralWorldObject.Target t) {
+				t.setCurrentLodRange(LOD0, BuildingPart.INDOOR_MIN_LOD);
+				t.drawTriangles(params.opaqueWindowMaterial, paneTriangles,
+						triangleTexCoordLists(paneTriangles, params.opaqueWindowMaterial, surface::texCoordFunction));
+				t.setCurrentLodRange(previousLodRange);
+			}
+		} else {
+			target.drawTriangles(params.opaqueWindowMaterial, paneTriangles,
+					triangleTexCoordLists(paneTriangles, params.opaqueWindowMaterial, surface::texCoordFunction));
+		}
 
 		/* draw outer frame */
 
@@ -320,7 +345,7 @@ public class GeometryWindow implements Window {
 					outline.getCentroid().add(0, -outline.getDiameter()),
 					outline.getCentroid().add(0, +outline.getDiameter()));
 
-			Collection<PolygonWithHolesXZ> outlineParts = splitPolygonIntoFaces(asSimplePolygon(outline), asList(splitLine));
+			Collection<PolygonWithHolesXZ> outlineParts = splitPolygonIntoFaces(asSimplePolygon(outline), List.of(), List.of(splitLine));
 
 			double hingeSpace = 0.03;
 

@@ -11,7 +11,6 @@ import javax.annotation.Nullable;
 
 import org.osm2world.core.map_data.data.MapElement;
 import org.osm2world.core.map_data.data.overlaps.MapOverlap;
-import org.osm2world.core.map_data.data.overlaps.MapOverlapType;
 import org.osm2world.core.map_elevation.creation.EleConstraintEnforcer;
 import org.osm2world.core.map_elevation.data.EleConnector;
 import org.osm2world.core.map_elevation.data.GroundState;
@@ -19,7 +18,6 @@ import org.osm2world.core.math.InvalidGeometryException;
 import org.osm2world.core.math.algorithms.CAGUtil;
 import org.osm2world.core.math.shapes.PolygonShapeXZ;
 import org.osm2world.core.math.shapes.SimplePolygonShapeXZ;
-import org.osm2world.core.target.Renderable;
 import org.osm2world.core.target.common.mesh.Mesh;
 import org.osm2world.core.target.common.model.Model;
 import org.osm2world.core.target.common.model.ModelInstance;
@@ -38,7 +36,7 @@ public interface WorldObject {
 	 */
 	public default List<Mesh> buildMeshesForModelHierarchy() {
 		List<Mesh> result = new ArrayList<>(buildMeshes());
-		getSubModels().forEach(it -> result.addAll(it.model.buildMeshes(it.params)));
+		getSubModels().forEach(it -> result.addAll(it.getMeshes()));
 		return result;
 	}
 
@@ -52,7 +50,7 @@ public interface WorldObject {
 	/**
 	 * returns another world object this is part of, if any (e.g. a room is part of a building).
 	 * Parents are responsible for rendering their children, so only root objects (those returning null here)
-	 * will have their {@link Renderable#renderTo(org.osm2world.core.target.Target)} methods called.
+	 * will have their {@link #buildMeshes()} and {@link #getSubModels()} methods called directly.
 	 */
 	public default @Nullable WorldObject getParent() { return null; }
 
@@ -175,12 +173,6 @@ public interface WorldObject {
 				boolean bothOnGround = this.getGroundState() == ON && otherWO.getGroundState() == ON;
 
 				if (bothOnGround && otherWO.getOverlapPriority() > this.getOverlapPriority()) {
-
-					if (overlap.type == MapOverlapType.CONTAIN
-							&& overlap.e1 == getPrimaryMapElement()) {
-						// completely within other element, no ground area left
-						return emptyList();
-					}
 
 					try {
 						subtractPolys.addAll(otherWO.getRawGroundFootprint());

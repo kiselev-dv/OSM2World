@@ -1,15 +1,18 @@
 package org.osm2world.core;
 
-import static java.lang.Math.*;
-import static java.util.Arrays.*;
-import static java.util.Collections.*;
-import static java.util.Comparator.*;
-import static org.osm2world.core.math.AxisAlignedRectangleXZ.*;
+import static java.lang.Math.abs;
+import static java.util.Arrays.asList;
+import static java.util.Collections.emptyList;
+import static java.util.Collections.singleton;
+import static java.util.Comparator.comparingDouble;
+import static org.osm2world.core.math.AxisAlignedRectangleXZ.bbox;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.*;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.Optional;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
@@ -19,12 +22,15 @@ import javax.annotation.Nullable;
 import org.apache.commons.configuration.BaseConfiguration;
 import org.apache.commons.configuration.Configuration;
 import org.osm2world.core.conversion.ConversionLog;
-import org.osm2world.core.map_data.creation.*;
+import org.osm2world.core.map_data.creation.LatLon;
+import org.osm2world.core.map_data.creation.MapProjection;
+import org.osm2world.core.map_data.creation.MetricMapProjection;
+import org.osm2world.core.map_data.creation.OSMToMapDataConverter;
 import org.osm2world.core.map_data.data.MapData;
 import org.osm2world.core.map_data.data.MapMetadata;
 import org.osm2world.core.map_elevation.creation.*;
 import org.osm2world.core.map_elevation.data.EleConnector;
-import org.osm2world.core.math.FaceXYZ;
+import org.osm2world.core.math.FlatSimplePolygonShapeXYZ;
 import org.osm2world.core.math.VectorXYZ;
 import org.osm2world.core.math.datastructures.IndexGrid;
 import org.osm2world.core.math.datastructures.SpatialIndex;
@@ -125,9 +131,8 @@ public class ConversionFacade {
 
 	private Function<LatLon, ? extends MapProjection> mapProjectionFactory = MetricMapProjection::new;
 
-	private Factory<? extends TerrainInterpolator> terrainEleInterpolatorFactory = ZeroInterpolator::new;
-
-	private Factory<? extends EleCalculator> eleCalculatorFactory = BridgeTunnelEleCalculator::new;
+	private @Nullable Factory<? extends TerrainInterpolator> terrainEleInterpolatorFactory = null;
+	private @Nullable Factory<? extends EleCalculator> eleCalculatorFactory = null;
 
 	/**
 	 * sets the factory that will make {@link MapProjection}
@@ -139,21 +144,20 @@ public class ConversionFacade {
 	}
 
 	/**
-	 * sets the factory that will make {@link EleCalculator}
-	 * instances during subsequent calls to
+	 * sets the factory that will make {@link EleCalculator} instances during subsequent calls to
 	 * {@link #createRepresentations(OSMData, MapMetadata, List, Configuration, List)}.
+	 * Can be set to null, in which case there will be an attempt to parse the configuration for this.
 	 */
-	public void setEleCalculatorFactory(Factory<? extends EleCalculator> eleCalculatorFactory) {
+	public void setEleCalculatorFactory(@Nullable Factory<? extends EleCalculator> eleCalculatorFactory) {
 		this.eleCalculatorFactory = eleCalculatorFactory;
 	}
 
 	/**
-	 * sets the factory that will make {@link TerrainInterpolator}
-	 * instances during subsequent calls to
+	 * sets the factory that will make {@link TerrainInterpolator} instances during subsequent calls to
 	 * {@link #createRepresentations(OSMData, MapMetadata, List, Configuration, List)}.
+	 *  Can be set to null, in which case there will be an attempt to parse the configuration for this.
 	 */
-	public void setTerrainEleInterpolatorFactory(
-			Factory<? extends TerrainInterpolator> enforcerFactory) {
+	public void setTerrainEleInterpolatorFactory(@Nullable Factory<? extends TerrainInterpolator> enforcerFactory) {
 		this.terrainEleInterpolatorFactory = enforcerFactory;
 	}
 
@@ -366,7 +370,7 @@ public class ConversionFacade {
 
 		for (boolean requirePreferredHeight : asList(true, false)) {
 
-			Predicate<FaceXYZ> matchesPreferredHeight = (FaceXYZ f) -> {
+			Predicate<FlatSimplePolygonShapeXYZ> matchesPreferredHeight = f -> {
 				if (!requirePreferredHeight) {
 					return true;
 				} else {
@@ -376,12 +380,12 @@ public class ConversionFacade {
 				}
 			};
 
-			Optional<FaceXYZ> closestFace = surface.getFaces().stream()
+			Optional<? extends FlatSimplePolygonShapeXYZ> closestFace = surface.getFaces().stream()
 					.filter(matchesPreferredHeight)
 					.filter(f -> connector.isAcceptableNormal.test(f.getNormal()))
 					.min(comparingDouble(f -> connector.changeXZ ? f.distanceTo(posAtEle) : f.distanceToXZ(posAtEle)));
 
-			if (!closestFace.isPresent()) continue; // try again without enforcing the preferred height
+			if (closestFace.isEmpty()) continue; // try again without enforcing the preferred height
 
 			VectorXYZ closestPoint = null;
 
@@ -405,14 +409,14 @@ public class ConversionFacade {
 	}
 
 	/**
-	 * uses OSM data and an terrain elevation data (usually from an external
+	 * uses OSM data and a terrain elevation data (usually from an external
 	 * source) to calculate elevations for all {@link EleConnector}s of the
 	 * {@link WorldObject}s
 	 */
 	private void calculateElevations(MapData mapData,
 			TerrainElevationData eleData, Configuration config) {
 
-		TerrainInterpolator interpolator = terrainEleInterpolatorFactory.get();
+		TerrainInterpolator interpolator = createTerrainInterpolator(config);
 
 		if (eleData == null) {
 			interpolator = new ZeroInterpolator();
@@ -427,7 +431,7 @@ public class ConversionFacade {
 			try {
 				sites = eleData.getSites(mapData.getDataBoundary().pad(10));
 			} catch (IOException e) {
-				e.printStackTrace();
+				ConversionLog.error("Could not read elevation data: " + e.getMessage(), e);
 			}
 
 			if (!sites.isEmpty()) {
@@ -451,8 +455,39 @@ public class ConversionFacade {
 
 		/* refine terrain-based elevation with information from map data */
 
-		EleCalculator eleCalculator = eleCalculatorFactory.get();
+		EleCalculator eleCalculator = createEleCalculator(config);
 		eleCalculator.calculateElevations(mapData);
+
+	}
+
+	private EleCalculator createEleCalculator(Configuration config) {
+
+		if (eleCalculatorFactory != null) {
+			return eleCalculatorFactory.get();
+		} else {
+			return switch (config.getString("eleCalculator", "")) {
+				case "NoOpEleCalculator" -> new NoOpEleCalculator();
+				case "EleTagEleCalculator" -> new EleTagEleCalculator();
+				case "ConstraintEleCalculator" -> new ConstraintEleCalculator(new SimpleEleConstraintEnforcer());
+				default -> new BridgeTunnelEleCalculator();
+			};
+		}
+
+	}
+
+	private TerrainInterpolator createTerrainInterpolator(Configuration config) {
+
+		if (terrainEleInterpolatorFactory != null) {
+			return terrainEleInterpolatorFactory.get();
+		} else {
+			return switch (config.getString("terrainInterpolator", "")) {
+				case "LinearInterpolator" -> new LinearInterpolator();
+				case "LeastSquaresInterpolator" -> new LeastSquaresInterpolator();
+				case "NaturalNeighborInterpolator" -> new NaturalNeighborInterpolator();
+				case "InverseDistanceWeightingInterpolator" -> new InverseDistanceWeightingInterpolator();
+				default -> new ZeroInterpolator();
+			};
+		}
 
 	}
 

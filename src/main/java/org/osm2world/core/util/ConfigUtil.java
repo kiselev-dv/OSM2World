@@ -8,12 +8,14 @@ import java.awt.FontFormatException;
 import java.awt.GraphicsEnvironment;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import javax.annotation.Nullable;
 
 import org.apache.commons.configuration.Configuration;
+import org.apache.commons.configuration.FileConfiguration;
 import org.osm2world.core.target.common.mesh.LevelOfDetail;
 
 /**
@@ -133,8 +135,18 @@ final public class ConfigUtil {
 		}
 	}
 
+	public static <T extends Enum<T>> @Nullable T readEnum(Class<T> enumClass, Configuration config, String key) {
+		String value = config.getString(key);
+		if (value != null) {
+			try {
+				return Enum.valueOf(enumClass, value.toUpperCase());
+			} catch (IllegalArgumentException ignored) {}
+		}
+		return null;
+	}
+
 	/**
-	 * If config references some files by path i.e. textures
+	 * If config references some files by path e.g. textures
 	 * resolve file paths relative to config location
 	 */
 	public static File resolveFileConfigProperty(Configuration config, String fileName) {
@@ -142,8 +154,21 @@ final public class ConfigUtil {
 			return null;
 		}
 
-		String basePath = config.getString("configPath", null);
-		File file = new File(basePath, fileName);
+		File file = new File(fileName);
+		
+		String basePath = null;
+		if (config.containsKey("configPath")) {
+			basePath = config.getString("configPath");
+		}
+
+		if (basePath == null && config instanceof FileConfiguration fc && fc.getFile() != null) {
+			basePath = fc.getFile().getAbsoluteFile().getParent();
+		}
+
+		if (basePath != null) {
+			file = Path.of(basePath).normalize()
+					.resolve(Path.of(fileName).normalize()).toFile();
+		}
 
 		if (!file.exists()) {
 			System.err.println("File referenced in config does not exist: " + file);

@@ -7,6 +7,8 @@ import static org.osm2world.core.math.algorithms.CAGUtil.subtractPolygons;
 
 import java.util.*;
 
+import javax.annotation.Nullable;
+
 import org.apache.commons.configuration.Configuration;
 import org.osm2world.core.map_data.data.MapArea;
 import org.osm2world.core.map_data.data.MapElement;
@@ -21,19 +23,21 @@ import org.osm2world.core.map_elevation.data.GroundState;
 import org.osm2world.core.math.LineSegmentXZ;
 import org.osm2world.core.math.SimplePolygonXZ;
 import org.osm2world.core.math.shapes.PolygonShapeXZ;
-import org.osm2world.core.target.Target;
+import org.osm2world.core.target.common.mesh.LevelOfDetail;
+import org.osm2world.core.util.ConfigUtil;
 import org.osm2world.core.util.FaultTolerantIterationUtil;
 import org.osm2world.core.world.attachment.AttachmentSurface;
 import org.osm2world.core.world.data.AreaWorldObject;
-import org.osm2world.core.world.data.LegacyWorldObject;
+import org.osm2world.core.world.data.CachingProceduralWorldObject;
 import org.osm2world.core.world.modules.building.indoor.IndoorWall;
 
 /**
  * a building. Rendering a building is implemented as rendering all of its {@link BuildingPart}s.
  */
-public class Building implements AreaWorldObject, LegacyWorldObject {
+public class Building extends CachingProceduralWorldObject implements AreaWorldObject {
 
 	private final MapArea area;
+	private final Configuration config;
 
 	private final List<BuildingPart> parts = new ArrayList<>();
 
@@ -41,11 +45,10 @@ public class Building implements AreaWorldObject, LegacyWorldObject {
 
 	private Map<NodeWithLevelAndHeights, List<LineSegmentXZ>> wallNodePolygonSegments = new HashMap<>();
 
-	private Collection<AttachmentSurface> attachmentSurfaces = null;
-
 	public Building(MapArea area, Configuration config) {
 
 		this.area = area;
+		this.config = config;
 
 		Optional<MapRelation> buildingRelation = area.getMemberships().stream()
 				.filter(it -> "outline".equals(it.getRole()))
@@ -160,35 +163,28 @@ public class Building implements AreaWorldObject, LegacyWorldObject {
 	}
 
 	@Override
-	public void renderTo(Target target) {
-		FaultTolerantIterationUtil.forEach(parts, part -> part.renderTo(target));
+	protected @Nullable LevelOfDetail getConfiguredLod() {
+		return ConfigUtil.readLOD(config);
+	}
+
+	@Override
+	public void buildMeshesAndModels(Target target) {
+		FaultTolerantIterationUtil.forEach(parts, part -> part.buildMeshesAndModels(target));
 		IndoorWall.renderNodePolygons(target, wallNodePolygonSegments);
 	}
 
 	@Override
-	public Collection<PolygonShapeXZ> getRawGroundFootprint(){
-		Collection<PolygonShapeXZ> shapes = new ArrayList<>();
-
+	public Collection<AttachmentSurface> getAttachmentSurfaces() {
+		List<AttachmentSurface> result = new ArrayList<>(super.getAttachmentSurfaces());
 		for (BuildingPart part : parts) {
-
-			if (part.levelStructure.bottomHeight() <= 0 && part.getIndoor() != null) {
-				shapes.add(part.getPolygon());
-			}
-
+			result.addAll(part.getAttachmentSurfaces());
 		}
-
-		return shapes;
+		return result;
 	}
 
 	@Override
-	public Collection<AttachmentSurface> getAttachmentSurfaces() {
-		if (attachmentSurfaces == null) {
-			attachmentSurfaces = new ArrayList<>();
-			for (BuildingPart part : parts) {
-				attachmentSurfaces.addAll(part.getAttachmentSurfaces());
-			}
-		}
-		return attachmentSurfaces;
+	public Collection<PolygonShapeXZ> getRawGroundFootprint() {
+		return List.of(); // BuildingParts return their own footprint if necessary
 	}
 
 	public record NodeWithLevelAndHeights(

@@ -10,11 +10,12 @@ import static org.osm2world.core.target.common.texcoord.TexCoordUtil.texCoordLis
 import java.util.List;
 
 import org.osm2world.core.conversion.ConversionLog;
+import org.osm2world.core.map_data.data.MapNode;
 import org.osm2world.core.math.PolygonXYZ;
 import org.osm2world.core.math.SimplePolygonXZ;
 import org.osm2world.core.math.VectorXYZ;
 import org.osm2world.core.math.VectorXZ;
-import org.osm2world.core.target.Target;
+import org.osm2world.core.target.CommonTarget;
 import org.osm2world.core.target.common.material.Material;
 
 public class Door implements WallElement {
@@ -43,11 +44,11 @@ public class Door implements WallElement {
 
 	@Override
 	public double insetDistance() {
-		return 0.10;
+		return parameters.inset;
 	}
 
 	@Override
-	public void renderTo(Target target, WallSurface surface) {
+	public void renderTo(CommonTarget target, WallSurface surface) {
 
 		Material doorMaterial = ENTRANCE_DEFAULT;
 
@@ -100,6 +101,10 @@ public class Door implements WallElement {
 
 		}
 
+	}
+
+	public static boolean isDoorNode(MapNode n) {
+		return n.getTags().containsKey("entrance") || n.getTags().containsKey("door");
 	}
 
 }

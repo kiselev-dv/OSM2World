@@ -9,6 +9,8 @@ import static java.util.stream.Collectors.toMap;
 import static org.osm2world.core.math.GeometryUtil.insertIntoPolygon;
 import static org.osm2world.core.math.VectorXZ.NULL_VECTOR;
 import static org.osm2world.core.math.VectorXZ.listXYZ;
+import static org.osm2world.core.target.common.mesh.LevelOfDetail.*;
+import static org.osm2world.core.util.ConfigUtil.readLOD;
 import static org.osm2world.core.util.ValueParseUtil.parseLevels;
 import static org.osm2world.core.world.modules.common.WorldModuleParseUtil.inheritTags;
 
@@ -16,6 +18,7 @@ import java.util.*;
 
 import javax.annotation.Nullable;
 
+import org.apache.commons.configuration.Configuration;
 import org.osm2world.core.conversion.ConversionLog;
 import org.osm2world.core.map_data.data.MapNode;
 import org.osm2world.core.map_data.data.MapSegment;
@@ -24,11 +27,10 @@ import org.osm2world.core.map_data.data.TagSet;
 import org.osm2world.core.math.*;
 import org.osm2world.core.math.shapes.PolylineShapeXZ;
 import org.osm2world.core.math.shapes.PolylineXZ;
-import org.osm2world.core.target.Renderable;
-import org.osm2world.core.target.Target;
 import org.osm2world.core.target.common.material.Material;
 import org.osm2world.core.target.common.material.Materials;
-import org.osm2world.core.world.attachment.AttachmentSurface;
+import org.osm2world.core.target.common.mesh.LODRange;
+import org.osm2world.core.world.data.ProceduralWorldObject;
 import org.osm2world.core.world.data.WorldObject;
 import org.osm2world.core.world.modules.building.LevelAndHeightData.Level;
 import org.osm2world.core.world.modules.building.LevelAndHeightData.Level.LevelType;
@@ -37,7 +39,10 @@ import org.osm2world.core.world.modules.building.indoor.IndoorRoom;
 
 import com.google.common.collect.Streams;
 
-public class Wall implements Renderable {
+/**
+ * an outer wall of a {@link BuildingPart}
+ */
+public class ExteriorBuildingWall {
 
 	final @Nullable MapWay wallWay;
 
@@ -54,7 +59,7 @@ public class Wall implements Renderable {
 	/** the tags for this part, including tags inherited from {@link #buildingPart} and its {@link Building} */
 	private final TagSet tags;
 
-	public Wall(@Nullable MapWay wallWay, BuildingPart buildingPart, List<VectorXZ> points,
+	public ExteriorBuildingWall(@Nullable MapWay wallWay, BuildingPart buildingPart, List<VectorXZ> points,
 			Map<VectorXZ, MapNode> pointNodeMap, double floorHeight) {
 
 		this.wallWay = wallWay;
@@ -73,19 +78,14 @@ public class Wall implements Renderable {
 
 	}
 
-	public Wall(@Nullable MapWay wallWay, BuildingPart buildingPart, List<MapNode> nodes) {
+	public ExteriorBuildingWall(@Nullable MapWay wallWay, BuildingPart buildingPart, List<MapNode> nodes) {
 		this(wallWay, buildingPart,
 				nodes.stream().map(MapNode::getPos).collect(toList()),
 				nodes.stream().collect(toMap(MapNode::getPos, n -> n)),
 				buildingPart == null ? 0 : buildingPart.levelStructure.bottomHeight());
 	}
 
-	@Override
-	public void renderTo(Target target) {
-		renderTo(target, true);
-	}
-
-	public void renderTo(Target target, boolean renderElements) {
+	public void renderTo(ProceduralWorldObject.Target target) {
 
 		BuildingDefaults defaults = BuildingDefaults.getDefaultsFor(tags);
 
@@ -121,19 +121,6 @@ public class Wall implements Renderable {
 				hasWindows = false;
 			}
 
-		}
-
-		/* use configuration to determine which implementation of window rendering to use */
-
-		WindowImplementation windowImplementation;
-
-		if (Streams.stream(buildingPart.tags).anyMatch(t -> t.key.startsWith("window"))) {
-			//explicitly mapped windows, use different (usually higher LOD) setting
-			windowImplementation = WindowImplementation.getValue(
-					buildingPart.config.getString("explicitWindowImplementation"), WindowImplementation.FULL_GEOMETRY);
-		} else {
-			windowImplementation = WindowImplementation.getValue(
-				buildingPart.config.getString("implicitWindowImplementation"), WindowImplementation.FLAT_TEXTURES);
 		}
 
 		/* calculate the lower boundary of the wall */
@@ -195,134 +182,157 @@ public class Wall implements Renderable {
 				.map(p -> p.xyz(baseEle + heightWithoutRoof + buildingPart.roof.getRoofHeightAt(p)))
 				.collect(toList());
 
-		/* construct the surface(s) */
+		/* use configuration to determine which implementation of window rendering to use */
 
-		WallSurface mainSurface, roofSurface;
+		boolean explicitWindows = Streams.stream(buildingPart.tags).anyMatch(t -> t.key.startsWith("window"));
 
-		double maxHeight = max(topPoints, comparingDouble(v -> v.y)).y - floorEle;
+		Map<WindowImplementation, LODRange> windowImplementations = chooseWindowImplementations(explicitWindows,
+				getNodes().stream().anyMatch(Door::isDoorNode), buildingPart.config);
 
-		if (windowImplementation != WindowImplementation.FLAT_TEXTURES
-				|| !hasWindows || maxHeight + floorHeight - heightWithoutRoof < 0.01) {
+		for (WindowImplementation windowImplementation : windowImplementations.keySet()) {
 
-			roofSurface = null;
+			LODRange lodRange = windowImplementations.get(windowImplementation);
+			if (buildingPart.config.containsKey("lod") &&
+					!lodRange.contains(readLOD(buildingPart.config))) continue;
+			target.setCurrentLodRange(lodRange);
 
-			try {
-				mainSurface = new WallSurface(material, bottomPoints, topPoints);
-			} catch (InvalidGeometryException e) {
-				mainSurface = null;
-			}
+			/* construct the surface(s) */
 
-		} else {
+			@Nullable WallSurface mainSurface, roofSurface;
 
-			// using window textures. Need to separate the bit of wall "in the roof" which should not have windows.
+			double maxHeight = max(topPoints, comparingDouble(v -> v.y)).y - floorEle;
 
-			double middlePointsHeight = Math.min(heightWithoutRoof - floorHeight,
-					min(topPoints, comparingDouble(v -> v.y)).y - floorEle);
+			if (windowImplementation != WindowImplementation.FLAT_TEXTURES
+					|| !hasWindows || maxHeight + floorHeight - heightWithoutRoof < 0.01) {
 
-			List<VectorXYZ> middlePoints = asList(
-					bottomPoints.get(0).addY(middlePointsHeight),
-					bottomPoints.get(bottomPoints.size() - 1).addY(middlePointsHeight));
-
-			try {
-				mainSurface = new WallSurface(material, bottomPoints, middlePoints);
-			} catch (InvalidGeometryException e) {
-				mainSurface = null;
-			}
-
-			try {
-				roofSurface = new WallSurface(material, middlePoints, topPoints);
-			} catch (InvalidGeometryException e) {
 				roofSurface = null;
+
+				try {
+					mainSurface = new WallSurface(material, bottomPoints, topPoints);
+				} catch (InvalidGeometryException e) {
+					mainSurface = null;
+				}
+
+			} else {
+
+				// using window textures. Need to separate the bit of wall "in the roof" which should not have windows.
+
+				double middlePointsHeight = Math.min(heightWithoutRoof - floorHeight,
+						min(topPoints, comparingDouble(v -> v.y)).y - floorEle);
+
+				List<VectorXYZ> middlePoints = asList(
+						bottomPoints.get(0).addY(middlePointsHeight),
+						bottomPoints.get(bottomPoints.size() - 1).addY(middlePointsHeight));
+
+				try {
+					mainSurface = new WallSurface(material, bottomPoints, middlePoints);
+				} catch (InvalidGeometryException e) {
+					mainSurface = null;
+				}
+
+				try {
+					roofSurface = new WallSurface(material, middlePoints, topPoints);
+				} catch (InvalidGeometryException e) {
+					roofSurface = null;
+				}
+
 			}
 
-		}
+			boolean individuallyMappedWindows = false;
 
-		/* add individually mapped doors and windows (if any) */
-		//TODO: doors at corners of the building (or boundaries between building:wall=yes ways) do not work yet
-		//TODO: cannot place doors into roof walls yet
+			if (mainSurface != null && windowImplementation != WindowImplementation.NONE) {
 
-		boolean individuallyMappedWindows = false;
+				/* add individually mapped doors and windows (if any) */
+				//TODO: doors at corners of the building (or boundaries between building:wall=yes ways) do not work yet
+				//TODO: cannot place doors into roof walls yet
 
-		for (MapNode node : getNodes()) {
+				for (MapNode node : getNodes()) {
 
-			Set<Integer> levels = new HashSet<>();
-			levels.add(min(parseLevels(node.getTags().getValue("level"), singletonList(0))));
-			levels.addAll(parseLevels(node.getTags().getValue("repeat_on"), emptyList()));
+					Set<Integer> levels = new HashSet<>();
+					levels.add(min(parseLevels(node.getTags().getValue("level"), singletonList(0))));
+					levels.addAll(parseLevels(node.getTags().getValue("repeat_on"), emptyList()));
 
-			for (int level : levels) {
+					for (int level : levels) {
 
-				if (getBuildingPart().levelStructure.hasLevel(level)) {
+						if (getBuildingPart().levelStructure.hasLevel(level)) {
 
-					VectorXZ pos = new VectorXZ(points.offsetOf(node.getPos()),
-							buildingPart.levelStructure.level(level).relativeEle
-									- buildingPart.levelStructure.bottomHeight());
+							VectorXZ pos = new VectorXZ(points.offsetOf(node.getPos()),
+									buildingPart.levelStructure.level(level).relativeEle
+											- buildingPart.levelStructure.bottomHeight());
 
-					if ((node.getTags().contains("building", "entrance")
-							|| node.getTags().containsKey("entrance")
-							|| node.getTags().containsKey("door"))) {
+							if (Door.isDoorNode(node)) {
 
-						DoorParameters params = DoorParameters.fromTags(node.getTags(), this.tags);
-						mainSurface.addElementIfSpaceFree(new Door(pos, params));
+								DoorParameters params = DoorParameters.fromTags(node.getTags(), this.tags);
+								if (lodRange.max().ordinal() < 3
+										|| readLOD(buildingPart.config).ordinal() < 3) {
+									params = params.withInset(0.0);
+								}
+								mainSurface.addElementIfSpaceFree(new Door(pos, params));
 
-					} else if (node.getTags().containsKey("window")
-							&& !node.getTags().contains("window", "no")) {
+							} else if (node.getTags().containsKey("window")
+									&& !node.getTags().contains("window", "no")) {
 
-						boolean transparent = determineWindowTransparency(node, level);
+								boolean transparent = determineWindowTransparency(node, level);
 
-						TagSet windowTags = inheritTags(node.getTags(), tags);
-						WindowParameters params = new WindowParameters(windowTags, buildingPart.levelStructure.level(level).height);
-						GeometryWindow window = new GeometryWindow(new VectorXZ(pos.x, pos.z + params.breast), params, transparent);
-						mainSurface.addElementIfSpaceFree(window);
+								TagSet windowTags = inheritTags(node.getTags(), tags);
+								WindowParameters params = new WindowParameters(windowTags, buildingPart.levelStructure.level(level).height);
+								GeometryWindow window = new GeometryWindow(new VectorXZ(pos.x, pos.z + params.breast), params, transparent);
+								mainSurface.addElementIfSpaceFree(window);
 
-						individuallyMappedWindows = true;
+								individuallyMappedWindows = true;
 
+							}
+						}
 					}
 				}
+
 			}
-		}
 
-		if (tags.containsAny(asList("building", "building:part"), asList("garage", "garages"))) {
-			if (!buildingPart.area.getBoundaryNodes().stream().anyMatch(
-					n -> n.getTags().containsKey("entrance") || n.getTags().containsKey("door"))) {
-				placeDefaultGarageDoors(mainSurface);
+			if (mainSurface != null) {
+
+				/* add garage doors */
+
+				if (tags.containsAny(asList("building", "building:part"), asList("garage", "garages"))) {
+					if (buildingPart.area.getBoundaryNodes().stream().noneMatch(Door::isDoorNode)) {
+						if (points.getLength() > buildingPart.area.getOuterPolygon().getOutlineLength() / 8) {
+							// not the narrow side of a long building with several garages
+							placeDefaultGarageDoors(mainSurface);
+						}
+					}
+				}
+
+				/* add windows (after doors, because default windows should be displaced by them) */
+
+				if (hasWindows && !individuallyMappedWindows
+						&& (windowImplementation == WindowImplementation.INSET_TEXTURES
+						|| windowImplementation == WindowImplementation.FULL_GEOMETRY)) {
+					placeDefaultWindows(mainSurface, windowImplementation);
+				}
+
 			}
+
+			/* draw the wall */
+
+			int levelCount = buildingPart.levelStructure.levels(EnumSet.of(LevelType.ABOVEGROUND)).size();
+			double windowHeight = (heightWithoutRoof - buildingPart.levelStructure.bottomHeight()) / levelCount;
+
+			if (mainSurface != null) {
+				mainSurface.renderTo(target, new VectorXZ(0, -floorHeight),
+						hasWindows && !individuallyMappedWindows
+								&& windowImplementation == WindowImplementation.FLAT_TEXTURES,
+						windowHeight,
+						"wall", "wall_mounted");
+			}
+
+			if (roofSurface != null) {
+				roofSurface.renderTo(target, NULL_VECTOR, false, windowHeight,
+						"wall", "wall_mounted");
+			}
+
 		}
 
-		/* add windows (after doors, because default windows should be displaced by them) */
+		target.setCurrentLodRange(null);
 
-		if (hasWindows && !individuallyMappedWindows
-				&& (windowImplementation == WindowImplementation.INSET_TEXTURES
-					|| windowImplementation == WindowImplementation.FULL_GEOMETRY)) {
-			placeDefaultWindows(mainSurface, windowImplementation);
-		}
-
-		/* draw the wall */
-
-		int levelCount = buildingPart.levelStructure.levels(EnumSet.of(LevelType.ABOVEGROUND)).size();
-		double windowHeight = (heightWithoutRoof - buildingPart.levelStructure.bottomHeight()) / levelCount;
-
-		if (mainSurface != null) {
-			mainSurface.renderTo(target, new VectorXZ(0, -floorHeight),
-					hasWindows && !individuallyMappedWindows
-						&& windowImplementation == WindowImplementation.FLAT_TEXTURES,
-					windowHeight, renderElements);
-		}
-
-		if (roofSurface != null) {
-			roofSurface.renderTo(target, NULL_VECTOR, false, windowHeight, renderElements);
-		}
-
-	}
-
-	public Collection<AttachmentSurface> getAttachmentSurfaces() {
-		try {
-			AttachmentSurface.Builder builder = new AttachmentSurface.Builder("wall", "wall_mounted");
-			this.renderTo(builder, false);
-			return singleton(builder.build());
-		} catch (Exception e) {
-			ConversionLog.error("Could not create wall attachment surface for an element", e, wallWay);
-			return emptyList();
-		}
 	}
 
 	@Override
@@ -356,8 +366,40 @@ public class Wall implements Renderable {
 
 	protected PolylineShapeXZ getPoints() { return points; }
 
+	private static Map<WindowImplementation, LODRange> chooseWindowImplementations(
+			boolean explicitWindows, boolean hasDoor, Configuration config) {
+
+		var explicitWI = WindowImplementation.getValue(config.getString("explicitWindowImplementation"), null);
+		var implicitWI = WindowImplementation.getValue(config.getString("implicitWindowImplementation"), null);
+
+		if (explicitWindows) {
+			if (explicitWI != null) {
+				return Map.of(explicitWI, new LODRange(LOD0, LOD4));
+			} else {
+				return Map.of(
+						WindowImplementation.NONE, new LODRange(LOD0),
+						WindowImplementation.FLAT_TEXTURES, new LODRange(LOD1, LOD2),
+						WindowImplementation.FULL_GEOMETRY, new LODRange(LOD3, LOD4)
+				);
+			}
+		} else {
+			if (implicitWI != null) {
+				return Map.of(implicitWI, new LODRange(LOD0, LOD4));
+			} else {
+				return Map.of(
+						WindowImplementation.NONE, new LODRange(LOD0, LOD1),
+						WindowImplementation.FLAT_TEXTURES, new LODRange(LOD2, LOD3),
+						WindowImplementation.FULL_GEOMETRY, new LODRange(LOD4)
+				);
+			}
+		}
+
+	}
+
 	/** places the default (i.e. not explicitly mapped) windows rows onto a wall surface */
 	private void placeDefaultWindows(WallSurface surface, WindowImplementation implementation) {
+
+		List<Window> windows = new ArrayList<>();
 
 		for (Level level : buildingPart.levelStructure.levels(EnumSet.of(LevelType.ABOVEGROUND))) {
 
@@ -377,11 +419,13 @@ public class Wall implements Renderable {
 				Window window = implementation == WindowImplementation.FULL_GEOMETRY
 						? new GeometryWindow(pos, windowParams, false)
 						: new TexturedWindow(pos, windowParams);
-				surface.addElementIfSpaceFree(window);
+				windows.add(window);
 
 			}
 
 		}
+
+		surface.addElementsIfSpaceFree(windows);
 
 	}
 
@@ -389,13 +433,18 @@ public class Wall implements Renderable {
 	private void placeDefaultGarageDoors(WallSurface surface) {
 
 		TagSet doorTags = TagSet.of("door", "overhead");
+		DoorParameters params = DoorParameters.fromTags(doorTags, this.tags);
 
-		double doorDistance = 1.25 * DoorParameters.fromTags(doorTags, this.tags).width;
+		if (readLOD(buildingPart.config).ordinal() < 3) {
+			params = params.withInset(0.0);
+		}
+
+		double doorDistance = 1.25 * params.width;
 		int numDoors = (int) round(surface.getLength() / doorDistance);
 
 		for (int i = 0; i < numDoors; i++) {
 			VectorXZ pos = new VectorXZ(surface.getLength() / numDoors * (i + 0.5), 0);
-			surface.addElementIfSpaceFree(new Door(pos, DoorParameters.fromTags(doorTags, TagSet.of())));
+			surface.addElementIfSpaceFree(new Door(pos, params));
 		}
 
 	}

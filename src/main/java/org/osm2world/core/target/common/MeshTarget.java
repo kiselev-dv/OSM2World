@@ -72,8 +72,45 @@ public class MeshTarget extends AbstractTarget {
 		@Override
 		public MeshStore apply(MeshStore meshStore) {
 			return new MeshStore(meshStore.meshesWithMetadata().stream()
-					.filter(m -> m.mesh().lodRangeContains(targetLod))
-					.collect(toList()));
+					.filter(m -> m.mesh().lodRange.contains(targetLod))
+					.toList());
+		}
+
+	}
+
+	/** converts all geometry to {@link TriangleGeometry} */
+	public record ConvertToTriangles(double desiredMaxError) implements MeshProcessingStep {
+
+		public ConvertToTriangles {
+			if (!Double.isFinite(desiredMaxError)) {
+				throw new IllegalArgumentException("invalid parameter: " + desiredMaxError);
+			}
+		}
+
+		public ConvertToTriangles(LevelOfDetail lod) {
+			this(switch (lod) {
+				case LOD4 -> 0.01;
+				case LOD3 -> 0.05;
+				case LOD2 -> 0.20;
+				case LOD1 -> 1.0;
+				case LOD0 -> 4.0;
+			});
+		}
+
+		@Override
+		public MeshStore apply(MeshStore meshStore) {
+			return new MeshStore(meshStore.meshesWithMetadata().stream()
+					.map(m -> new MeshWithMetadata(new Mesh(applyToGeometry(m.mesh().geometry),
+							m.mesh().material, m.mesh().lodRange), m.metadata()))
+					.toList());
+		}
+
+		public TriangleGeometry applyToGeometry(Geometry g) {
+			if (g instanceof ExtrusionGeometry eg) {
+				return eg.asTriangles(desiredMaxError);
+			} else {
+				return g.asTriangles();
+			}
 		}
 
 	}
@@ -112,8 +149,8 @@ public class MeshTarget extends AbstractTarget {
 		/** checks if two meshes should be merged according to the MergeOptions */
 		public boolean shouldBeMerged(MeshWithMetadata m1, MeshWithMetadata m2) {
 
-			if (m1.mesh().lodRangeMin != m2.mesh().lodRangeMin
-					|| m1.mesh().lodRangeMax != m2.mesh().lodRangeMax) {
+			if (m1.mesh().lodRange.min() != m2.mesh().lodRange.min()
+					|| m1.mesh().lodRange.max() != m2.mesh().lodRange.max()) {
 				return false;
 			}
 
@@ -180,7 +217,7 @@ public class MeshTarget extends AbstractTarget {
 	/** replaces meshes that have multiple layers of textures with multiple meshes, each of which have only one layer */
 	public static class EmulateTextureLayers implements MeshProcessingStep {
 
-		private static final double OFFSET_PER_LAYER = 1e-3;
+		private static final double OFFSET_PER_LAYER = 5e-2;
 
 		/** maximum number of layers for which geometry is created, additional ones are omitted */
 		private final int maxLayers;
@@ -226,7 +263,7 @@ public class MeshTarget extends AbstractTarget {
 								.withTransparency(layer > 0 ? Material.Transparency.BINARY : null)
 								.withLayers(List.of(mesh.material.getTextureLayers().get(layer)));
 
-						Mesh newMesh = new Mesh(newGeometry, singleLayerMaterial, mesh.lodRangeMin, mesh.lodRangeMax);
+						Mesh newMesh = new Mesh(newGeometry, singleLayerMaterial, mesh.lodRange);
 
 						result.add(new MeshWithMetadata(newMesh, meshWithMetadata.metadata()));
 
@@ -264,10 +301,7 @@ public class MeshTarget extends AbstractTarget {
 				if (mesh.geometry instanceof TriangleGeometry tg) {
 
 					List<Color> colors = (tg.colors != null) ? tg.colors
-							: new ArrayList<>(nCopies(tg.vertices().size(), WHITE));
-					for (int i = 0; i < colors.size(); i++) {
-						colors.set(i, LColor.fromAWT(colors.get(i)).multiply(mesh.material.getLColor()).toAWT());
-					}
+							: nCopies(tg.vertices().size(), mesh.material.getColor());
 
 					TriangleGeometry.Builder builder = new TriangleGeometry.Builder(tg.texCoords.size(), null, null);
 					builder.addTriangles(tg.triangles, tg.texCoords, colors, tg.normalData.normals());
@@ -466,7 +500,7 @@ public class MeshTarget extends AbstractTarget {
 					builder.addTriangles(tg.triangles, newTexCoords, tg.colors, tg.normalData.normals());
 
 					Material newMaterial = mesh.material.withLayers(newTextureLayers);
-					Mesh newMesh = new Mesh(builder.build(), newMaterial, mesh.lodRangeMin, mesh.lodRangeMax);
+					Mesh newMesh = new Mesh(builder.build(), newMaterial, mesh.lodRange);
 
 					result.add(new MeshWithMetadata(newMesh, meshWithMetadata.metadata()));
 

@@ -15,9 +15,7 @@ public class TriangleXYZ implements FlatSimplePolygonShapeXYZ {
 		this.v2 = v2;
 		this.v3 = v3;
 
-		if (!v1.isFinite() || !v2.isFinite() || !v3.isFinite()) {
-			throw new InvalidGeometryException("Triangle vertex is not finite: " + v1 + ", " + v2 + ", " + v3);
-		} else if (getArea() < 1e-6) {
+		if (getArea() < 1e-6) {
 			// degenerate triangle: all three points are (almost, to account for floating point arithmetic) in a line
 			throw new InvalidGeometryException("Degenerate triangle: " + v1 + ", " + v2 + ", " + v3);
 		}
@@ -93,6 +91,24 @@ public class TriangleXYZ implements FlatSimplePolygonShapeXYZ {
 	/** creates a new triangle by adding a shift vector to each vertex of this triangle */
 	public TriangleXYZ shift(VectorXYZ v) {
 		return new TriangleXYZ(v1.add(v), v2.add(v), v3.add(v));
+	}
+
+	public TriangleXYZ rotateY(double angleRad) {
+		return new TriangleXYZ(v1.rotateY(angleRad), v2.rotateY(angleRad), v3.rotateY(angleRad));
+	}
+
+	public TriangleXYZ scale(VectorXYZ scaleOrigin, double scaleFactor) {
+		TriangleXYZ t = this.shift(scaleOrigin.invert());
+		t = new TriangleXYZ(t.v1.mult(scaleFactor), t.v2.mult(scaleFactor), t.v3.mult(scaleFactor));
+		return t.shift(scaleOrigin);
+	}
+
+	/**
+	 * returns the projection of this triangle into XZ plane.
+	 * Fails if this triangle is vertical.
+	 */
+	public TriangleXZ xz() {
+		return new TriangleXZ(v1.xz(), v2.xz(), v3.xz());
 	}
 
 	@Override

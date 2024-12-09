@@ -21,14 +21,14 @@ import org.osm2world.core.math.SimplePolygonXZ;
 import org.osm2world.core.math.TriangleXYZ;
 import org.osm2world.core.math.VectorXZ;
 import org.osm2world.core.math.shapes.PolygonShapeXZ;
-import org.osm2world.core.target.Target;
 import org.osm2world.core.target.common.material.Material;
 import org.osm2world.core.target.common.mesh.LODRange;
 import org.osm2world.core.target.common.model.InstanceParameters;
 import org.osm2world.core.target.common.model.Model;
+import org.osm2world.core.target.common.model.ModelInstance;
 import org.osm2world.core.target.common.model.Models;
 import org.osm2world.core.world.data.AbstractAreaWorldObject;
-import org.osm2world.core.world.data.LegacyWorldObject;
+import org.osm2world.core.world.data.ProceduralWorldObject;
 import org.osm2world.core.world.modules.common.AbstractModule;
 
 /**
@@ -57,7 +57,7 @@ public class ParkingModule extends AbstractModule {
 	}
 
 	private class SurfaceParking extends AbstractAreaWorldObject
-			implements LegacyWorldObject {
+			implements ProceduralWorldObject {
 
 		private final List<MapArea> parkingSpaces = new ArrayList<>();
 
@@ -91,7 +91,7 @@ public class ParkingModule extends AbstractModule {
 		}
 
 		@Override
-		public void renderTo(Target target) {
+		public void buildMeshesAndModels(Target target) {
 
 			String surface = area.getTags().getValue("surface");
 			Material material = getSurfaceMaterial(surface, ASPHALT);
@@ -103,15 +103,7 @@ public class ParkingModule extends AbstractModule {
 
 			/* draw cars on the parking spaces */
 
-			double ele = 0;
-
-			if (getConnectorIfAttached() != null) {
-				ele = getConnectorIfAttached().getAttachedPos().getY();
-			} else {
-				//TODO add elevation support
-			}
-
-			double carDensity = config.getDouble("carDensity", 0.3);
+			double carDensity = config.getDouble("parkedVehicleDensity", 0.3);
 			var random = new Random(area.getId());
 
 			for (MapArea parkingSpace : parkingSpaces) {
@@ -132,8 +124,14 @@ public class ParkingModule extends AbstractModule {
 					}
 					direction = direction.normalize();
 
-					target.drawModel(carModel, new InstanceParameters(
-							bbox.getCenter().xyz(ele), direction.angle(), carColor, new LODRange(LOD3, LOD4)));
+					// determine direction (with some randomness)
+					VectorXZ pos = bbox.getCenter().add(direction.mult(-0.2 + random.nextDouble(0.4)));
+
+					// determine elevation
+					double ele = getEleAt(pos);
+
+					target.addSubModel(new ModelInstance(carModel, new InstanceParameters(
+							pos.xyz(ele), direction.angle(), carColor, new LODRange(LOD3, LOD4))));
 
 				}
 			}

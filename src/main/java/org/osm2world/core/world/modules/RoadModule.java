@@ -17,6 +17,7 @@ import static org.osm2world.core.target.common.mesh.LevelOfDetail.*;
 import static org.osm2world.core.target.common.texcoord.NamedTexCoordFunction.*;
 import static org.osm2world.core.target.common.texcoord.TexCoordUtil.texCoordLists;
 import static org.osm2world.core.target.common.texcoord.TexCoordUtil.triangleTexCoordLists;
+import static org.osm2world.core.util.ValueParseUtil.ValueConstraint.POSITIVE;
 import static org.osm2world.core.util.ValueParseUtil.*;
 import static org.osm2world.core.util.color.ColorNameDefinitions.CSS_COLORS;
 import static org.osm2world.core.world.modules.common.WorldModuleGeometryUtil.createLineBetween;
@@ -39,7 +40,6 @@ import org.osm2world.core.math.shapes.PolygonShapeXZ;
 import org.osm2world.core.math.shapes.PolylineXZ;
 import org.osm2world.core.math.shapes.ShapeXZ;
 import org.osm2world.core.target.CommonTarget;
-import org.osm2world.core.target.Target;
 import org.osm2world.core.target.common.material.Material;
 import org.osm2world.core.target.common.material.Materials;
 import org.osm2world.core.target.common.material.TextureDataDimensions;
@@ -47,7 +47,6 @@ import org.osm2world.core.target.common.mesh.Mesh;
 import org.osm2world.core.target.common.texcoord.TexCoordFunction;
 import org.osm2world.core.target.common.texcoord.TexCoordUtil;
 import org.osm2world.core.util.enums.LeftRight;
-import org.osm2world.core.world.data.LegacyWorldObject;
 import org.osm2world.core.world.data.ProceduralWorldObject;
 import org.osm2world.core.world.modules.common.ConfigurableWorldModule;
 import org.osm2world.core.world.network.AbstractNetworkWaySegmentWorldObject;
@@ -835,7 +834,7 @@ public class RoadModule extends ConfigurableWorldModule {
 			Double lanes = null;
 
 			if (tags.containsKey("lanes")) {
-				lanes = parseOsmDecimal(tags.getValue("lanes"), false);
+				lanes = parseOsmDecimal(tags.getValue("lanes"), POSITIVE);
 			}
 
 			Double lanesRight = null;
@@ -848,7 +847,7 @@ public class RoadModule extends ConfigurableWorldModule {
 			if (laneTagsRight != null) {
 				lanesRight = (double)laneTagsRight.length;
 			} else if (tags.containsKey(rightKey)) {
-				lanesRight = parseOsmDecimal(tags.getValue(rightKey), false);
+				lanesRight = parseOsmDecimal(tags.getValue(rightKey), POSITIVE);
 			}
 
 			String leftKey = rightHandTraffic ? "lanes:backward" : "lanes:forward";
@@ -856,7 +855,7 @@ public class RoadModule extends ConfigurableWorldModule {
 			if (laneTagsLeft != null) {
 				lanesLeft = (double)laneTagsLeft.length;
 			} else if (tags.containsKey(leftKey)) {
-				lanesLeft = parseOsmDecimal(tags.getValue(leftKey), false);
+				lanesLeft = parseOsmDecimal(tags.getValue(leftKey), POSITIVE);
 			}
 
 			int vehicleLaneCount;
@@ -1569,14 +1568,14 @@ public class RoadModule extends ConfigurableWorldModule {
 	}
 
 	public static class RoadArea extends NetworkAreaWorldObject
-			implements LegacyWorldObject {
+			implements ProceduralWorldObject {
 
 		public RoadArea(MapArea area) {
 			super(area);
 		}
 
 		@Override
-		public void renderTo(Target target) {
+		public void buildMeshesAndModels(Target target) {
 
 			String surface = area.getTags().getValue("surface");
 			Material material = getSurfaceMaterial(surface, ASPHALT);
